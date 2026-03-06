@@ -173,6 +173,60 @@ export async function approveToolApproval(approvalId) {
 }
 
 
+export async function fetchFileTree({ agentId = "main", scope = "project", rootPath = "", maxDepth = 4 } = {}) {
+  const query = new URLSearchParams({
+    agent_id: agentId,
+    scope,
+    root_path: rootPath,
+    max_depth: String(maxDepth),
+  });
+  return requestJson(`/files/tree?${query.toString()}`);
+}
+
+
+export async function fetchFileContent({ path, agentId = "main", scope = "auto" }) {
+  const query = new URLSearchParams({
+    path,
+    agent_id: agentId,
+    scope,
+  });
+  return requestJson(`/files/content?${query.toString()}`);
+}
+
+
+export async function saveFileContent({ path, content, agentId = "main", scope = "auto" }) {
+  return requestJson("/files/content", {
+    method: "PUT",
+    body: JSON.stringify({
+      path,
+      content,
+      agent_id: agentId,
+      scope,
+    }),
+    timeoutMs: 30000,
+  });
+}
+
+
+export async function runShellCommand({ input, sessionId, agentId = "main", cwd = "", cwdScope = "project", confirm = false }) {
+  return requestJson("/tasks/tool", {
+    method: "POST",
+    body: JSON.stringify({
+      tool_name: "shell",
+      session_id: sessionId,
+      agent_id: agentId,
+      confirm,
+      args: {
+        input,
+        cwd,
+        cwd_scope: cwdScope,
+      },
+    }),
+    timeoutMs: 180000,
+  });
+}
+
+
 export async function rejectToolApproval(approvalId, reason = "manual reject") {
   return requestJson(`/tools/approvals/${approvalId}/reject`, {
     method: "POST",

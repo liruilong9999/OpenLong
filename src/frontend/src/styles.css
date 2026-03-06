@@ -303,6 +303,139 @@ button {
   overflow: hidden;
 }
 
+.ide-workbench {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 320px;
+  gap: 16px;
+  padding: 0 28px 28px;
+}
+
+.ide-panel {
+  background: rgba(16, 22, 38, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 380px;
+}
+
+.ide-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.ide-panel-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ide-panel-subtitle,
+.ide-subtitle-row {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.ide-toolbar-row,
+.terminal-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.terminal-form {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.terminal-form input,
+.terminal-form select,
+.ide-toolbar-row select {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.terminal-form input {
+  flex: 1 1 180px;
+}
+
+.file-tree-shell,
+.ide-diff-shell {
+  overflow: auto;
+  flex: 1;
+}
+
+.file-tree-node {
+  width: 100%;
+  justify-content: flex-start;
+  background: transparent;
+  color: var(--text-soft);
+  border: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.file-tree-node:hover,
+.file-tree-node.active {
+  background: rgba(122, 162, 255, 0.14);
+  color: var(--text-main);
+}
+
+.file-tree-icon {
+  margin-right: 8px;
+}
+
+.ide-editor-textarea {
+  flex: 1;
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
+  background: rgba(8, 12, 22, 0.92);
+  color: #dce8ff;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 14px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.ide-diff-block {
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ide-diff-line {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 4px 8px;
+}
+
+.ide-diff-line.added {
+  background: rgba(87, 199, 110, 0.12);
+}
+
+.ide-diff-line.removed {
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.ide-diff-line.same {
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .chat-stage.empty {
   justify-content: center;
 }
@@ -811,6 +944,10 @@ button {
   .inspector-shell {
     display: none;
   }
+
+  .ide-workbench {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {
@@ -824,6 +961,11 @@ button {
 
   .workspace-topbar,
   .chat-stage {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .ide-workbench {
     padding-left: 16px;
     padding-right: 16px;
   }

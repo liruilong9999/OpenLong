@@ -139,6 +139,7 @@ class GatewayRuntime:
             "workspace.exported",
             "workspace.imported",
             "workspace.file_uploaded",
+            "workspace.file_updated",
             "context.updated",
             "context.reloaded",
             "skill.reloaded",
@@ -224,6 +225,37 @@ class GatewayRuntime:
         if not snapshot.get("exists"):
             return None
         return snapshot
+
+    def list_file_tree(
+        self,
+        *,
+        agent_id: str,
+        scope: str = "project",
+        root_path: str = "",
+        max_depth: int = 4,
+    ) -> dict[str, Any]:
+        return self.workspace_manager.list_file_tree(
+            agent_id=agent_id,
+            scope=scope,
+            root_path=root_path,
+            max_depth=max_depth,
+        )
+
+    def read_file(self, *, agent_id: str, path: str, scope: str = "auto") -> dict[str, Any]:
+        return self.workspace_manager.read_file(agent_id=agent_id, path=path, scope=scope)
+
+    def write_file(self, *, agent_id: str, path: str, content: str, scope: str = "auto") -> dict[str, Any]:
+        result = self.workspace_manager.write_file(agent_id=agent_id, path=path, content=content, scope=scope)
+        self.event_bus.emit(
+            "workspace.file_updated",
+            {
+                "session_id": "",
+                "agent_id": agent_id,
+                "path": result["relative_path"],
+                "scope": result["scope"],
+            },
+        )
+        return result
 
     def create_workspace(
         self,

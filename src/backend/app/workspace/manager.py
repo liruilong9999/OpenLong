@@ -41,6 +41,7 @@ WORKSPACE_TEMPLATE_DIR = "_templates"
 BOOTSTRAP_FILE = "BOOTSTRAP.md"
 UPLOADS_DIR = "uploads"
 _SAFE_UPLOAD_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+_FILE_BROWSER_IGNORED_DIRS = {".git", "node_modules", "dist", "__pycache__", ".venv", "_sessions"}
 
 SKILL_LAYOUT_README = """# Skills Directory Layout
 
@@ -342,6 +343,102 @@ class WorkspaceManager:
         self._touch_metadata(agent_id)
         return str(target)
 
+    def read_file(self, agent_id: str, path: str, scope: str = "auto") -> dict[str, Any]:
+        workspace = self.ensure_agent_workspace(agent_id)
+        target, resolved_scope = self._resolve_file_target(
+            workspace=workspace,
+            relative_path=path,
+            action="read",
+            scope=scope,
+        )
+        if target is None or not target.exists() or not target.is_file():
+            raise FileNotFoundError(path)
+
+        content = target.read_text(encoding="utf-8", errors="ignore")
+        return {
+            "path": str(target),
+            "relative_path": target.relative_to(self._root_for_scope(resolved_scope, workspace)).as_posix(),
+            "scope": resolved_scope,
+            "content": content,
+            "size": target.stat().st_size,
+            "modified_at": datetime.fromtimestamp(target.stat().st_mtime, tz=timezone.utc).isoformat(),
+        }
+
+    def write_file(self, agent_id: str, path: str, content: str, scope: str = "auto") -> dict[str, Any]:
+        workspace = self.ensure_agent_workspace(agent_id)
+        target, resolved_scope = self._resolve_file_target(
+            workspace=workspace,
+            relative_path=path,
+            action="write",
+            scope=scope,
+        )
+        if target is None:
+            raise ValueError("path escapes allowed roots")
+
+        normalized = str(content or "")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(normalized, encoding="utf-8")
+        if resolved_scope == "workspace":
+            self._context_manager.invalidate(workspace)
+            self._touch_metadata(agent_id)
+        return {
+            "path": str(target),
+            "relative_path": target.relative_to(self._root_for_scope(resolved_scope, workspace)).as_posix(),
+            "scope": resolved_scope,
+            "size": target.stat().st_size,
+            "modified_at": datetime.fromtimestamp(target.stat().st_mtime, tz=timezone.utc).isoformat(),
+        }
+
+    def list_file_tree(
+        self,
+        agent_id: str,
+        *,
+        scope: str = "project",
+        root_path: str = "",
+        max_depth: int = 4,
+        include_hidden: bool = False,
+    ) -> dict[str, Any]:
+        workspace = self.ensure_agent_workspace(agent_id)
+        base_root = self._root_for_scope(scope, workspace)
+        start_path = base_root
+        if root_path:
+            resolved = self._safe_join(base_root, Path(root_path))
+            if resolved is None or not resolved.exists() or not resolved.is_dir():
+                raise FileNotFoundError(root_path)
+            start_path = resolved
+
+        def build_node(path: Path, depth: int) -> dict[str, Any]:
+            relative = path.relative_to(base_root).as_posix() if path != base_root else ""
+            node = {
+                "name": path.name if relative else ("project" if scope == "project" else agent_id),
+                "path": relative,
+                "type": "directory" if path.is_dir() else "file",
+            }
+            if path.is_file():
+                node["size"] = path.stat().st_size
+                return node
+
+            if depth >= max_depth:
+                node["children"] = []
+                return node
+
+            children: list[dict[str, Any]] = []
+            for child in sorted(path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+                if not include_hidden and child.name.startswith("."):
+                    continue
+                if child.is_dir() and child.name in _FILE_BROWSER_IGNORED_DIRS:
+                    continue
+                children.append(build_node(child, depth + 1))
+            node["children"] = children
+            return node
+
+        return {
+            "scope": scope,
+            "root": str(start_path),
+            "root_path": start_path.relative_to(base_root).as_posix() if start_path != base_root else "",
+            "tree": build_node(start_path, 0),
+        }
+
     def store_session_upload(
         self,
         agent_id: str,
@@ -485,6 +582,68 @@ class WorkspaceManager:
 
     def _workspace_path(self, agent_id: str) -> Path:
         return self._workspace_root / agent_id
+
+    def _root_for_scope(self, scope: str, workspace: Path) -> Path:
+        normalized = (scope or "project").strip().lower()
+        if normalized == "workspace":
+            return workspace.resolve()
+        return self._project_root.resolve()
+
+    def _resolve_file_target(
+        self,
+        *,
+        workspace: Path,
+        relative_path: str,
+        action: str,
+        scope: str,
+    ) -> tuple[Path | None, str]:
+        workspace_root = workspace.resolve()
+        project_root = self._project_root.resolve()
+        requested_path = Path(relative_path)
+
+        if requested_path.is_absolute():
+            resolved = requested_path.resolve()
+            if self._is_within_root(resolved, workspace_root):
+                return resolved, "workspace"
+            if self._is_within_root(resolved, project_root):
+                return resolved, "project"
+            return None, scope
+
+        if scope == "workspace":
+            return self._safe_join(workspace_root, requested_path), "workspace"
+        if scope == "project":
+            return self._safe_join(project_root, requested_path), "project"
+
+        project_candidate = self._safe_join(project_root, requested_path)
+        workspace_candidate = self._safe_join(workspace_root, requested_path)
+        if project_candidate is None or workspace_candidate is None:
+            return None, scope
+
+        if action == "read":
+            if project_candidate.exists():
+                return project_candidate, "project"
+            if workspace_candidate.exists():
+                return workspace_candidate, "workspace"
+            if project_candidate.parent.exists() and len(requested_path.parts) > 1:
+                return project_candidate, "project"
+            return workspace_candidate, "workspace"
+
+        if project_candidate.exists():
+            return project_candidate, "project"
+        if workspace_candidate.exists():
+            return workspace_candidate, "workspace"
+        if project_candidate.parent.exists() and len(requested_path.parts) > 1:
+            return project_candidate, "project"
+        return workspace_candidate, "workspace"
+
+    def _safe_join(self, root: Path, path: Path) -> Path | None:
+        target = (root / path).resolve()
+        if not self._is_within_root(target, root):
+            return None
+        return target
+
+    def _is_within_root(self, target: Path, root: Path) -> bool:
+        return target == root or root in target.parents
 
     def _safe_upload_name(self, filename: str) -> str:
         base = Path(filename).name.strip() or "upload.bin"

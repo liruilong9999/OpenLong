@@ -90,6 +90,13 @@ class SkillUpsertRequest(BaseModel):
     markdown: str = Field(default="")
 
 
+class FileContentUpsertRequest(BaseModel):
+    path: str = Field(min_length=1)
+    content: str = Field(default="")
+    agent_id: str = Field(default="main")
+    scope: str = Field(default="auto")
+
+
 def build_api_router() -> APIRouter:
     router = APIRouter()
 
@@ -227,6 +234,48 @@ def build_api_router() -> APIRouter:
             media_type=item.get("content_type") or "application/octet-stream",
             filename=item.get("filename") or item.get("saved_name") or saved_name,
         )
+
+    @router.get("/files/tree")
+    async def file_tree(
+        request: Request,
+        agent_id: str = "main",
+        scope: str = "project",
+        root_path: str = "",
+        max_depth: int = 4,
+    ) -> dict[str, Any]:
+        try:
+            return request.app.state.runtime.list_file_tree(
+                agent_id=agent_id,
+                scope=scope,
+                root_path=root_path,
+                max_depth=max_depth,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.get("/files/content")
+    async def file_content(
+        request: Request,
+        path: str,
+        agent_id: str = "main",
+        scope: str = "auto",
+    ) -> dict[str, Any]:
+        try:
+            return request.app.state.runtime.read_file(agent_id=agent_id, path=path, scope=scope)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.put("/files/content")
+    async def save_file_content(body: FileContentUpsertRequest, request: Request) -> dict[str, Any]:
+        try:
+            return request.app.state.runtime.write_file(
+                agent_id=body.agent_id,
+                path=body.path,
+                content=body.content,
+                scope=body.scope,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/sessions/{session_id}/assign-agent")
     async def assign_agent(session_id: str, body: SessionAssignRequest, request: Request) -> dict[str, Any]:

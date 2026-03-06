@@ -6,6 +6,8 @@ import {
   checkHealth,
   createChatSocket,
   createSession,
+  fetchFileContent,
+  fetchFileTree,
   fetchAgentContext,
   fetchMemoryDashboard,
   fetchSessionHistory,
@@ -14,9 +16,14 @@ import {
   fetchSystemDashboard,
   rejectToolApproval,
   resolveApiUrl,
+  runShellCommand,
+  saveFileContent,
   sendChatMessage,
   uploadSessionAttachments,
 } from "./api/client";
+import CodeEditorPanel from "./components/CodeEditorPanel";
+import FileExplorer from "./components/FileExplorer";
+import TerminalPanel from "./components/TerminalPanel";
 
 
 const AGENT_ID = "main";
@@ -318,6 +325,12 @@ function App() {
   const [sessionTitles, setSessionTitles] = useState(() => loadStoredTitles());
   const [approvalBusyId, setApprovalBusyId] = useState("");
   const [liveShellLines, setLiveShellLines] = useState([]);
+  const [ideScope, setIdeScope] = useState("project");
+  const [fileTreeState, setFileTreeState] = useState({ loading: true, error: "", data: null });
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [originalFileContent, setOriginalFileContent] = useState("");
+  const [editedFileContent, setEditedFileContent] = useState("");
+  const [savingFile, setSavingFile] = useState(false);
   const [inspector, setInspector] = useState({
     loading: true,
     error: "",
@@ -374,6 +387,8 @@ function App() {
     () => dedupeMemoryItems(inspector.memory?.recent_items || []).slice(0, 4),
     [inspector.memory]
   );
+  const approvalItems = useMemo(() => inspector.system?.tool_approvals?.items || [], [inspector.system]);
+  const shellLogItems = useMemo(() => inspector.system?.shell_logs?.items || [], [inspector.system]);
 
   const hasConversation = messages.some((item) => item.role === "user" || item.role === "assistant");
 
@@ -448,6 +463,9 @@ function App() {
       onStatus: (status) => setSocketStatus(status),
       onMessage: (payload) => {
         if (payload.type === "event") {
+          if (payload.name === "workspace.file_updated") {
+            void refreshFileTree();
+          }
           if (payload.name === "tool.execution.stream") {
             const stream = payload?.payload?.stream || "stdout";
             const text = String(payload?.payload?.text || "").trim();
@@ -568,6 +586,53 @@ function App() {
     }
   }
 
+  async function refreshFileTree(scope = ideScope) {
+    setFileTreeState((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const data = await fetchFileTree({ agentId: AGENT_ID, scope, maxDepth: 5 });
+      setFileTreeState({ loading: false, error: "", data });
+    } catch (error) {
+      setFileTreeState({ loading: false, error: error.message, data: null });
+    }
+  }
+
+  async function openIdeFile(node) {
+    if (!node || node.type !== "file") {
+      return;
+    }
+    try {
+      const payload = await fetchFileContent({ path: node.path, agentId: AGENT_ID, scope: ideScope });
+      setSelectedFile({ path: node.path, scope: payload.scope });
+      setOriginalFileContent(payload.content || "");
+      setEditedFileContent(payload.content || "");
+      setGlobalHint("");
+    } catch (error) {
+      setGlobalHint(`读取文件失败：${error.message}`);
+    }
+  }
+
+  async function saveIdeFile() {
+    if (!selectedFile) {
+      return;
+    }
+    setSavingFile(true);
+    try {
+      await saveFileContent({
+        path: selectedFile.path,
+        content: editedFileContent,
+        agentId: AGENT_ID,
+        scope: selectedFile.scope,
+      });
+      setOriginalFileContent(editedFileContent);
+      await Promise.all([refreshFileTree(selectedFile.scope), refreshInspector()]);
+      setGlobalHint(`已保存：${selectedFile.path}`);
+    } catch (error) {
+      setGlobalHint(`保存文件失败：${error.message}`);
+    } finally {
+      setSavingFile(false);
+    }
+  }
+
   async function handleRejectApproval(approvalId) {
     setApprovalBusyId(approvalId);
     try {
@@ -580,6 +645,37 @@ function App() {
       setApprovalBusyId("");
     }
   }
+
+  async function handleRunShellCommand({ input, cwd, cwdScope }) {
+    const sessionId = await ensureActiveSession();
+    try {
+      const payload = await runShellCommand({
+        input,
+        cwd,
+        cwdScope,
+        sessionId,
+        agentId: AGENT_ID,
+        confirm: false,
+      });
+      if (payload?.data?.pending_approval) {
+        setGlobalHint(`命令已提交审批：${payload.data.approval.command_preview}`);
+      } else if (payload?.success) {
+        setGlobalHint(`命令执行完成：${payload.content}`);
+      } else {
+        setGlobalHint(`命令执行失败：${payload.content}`);
+      }
+      await refreshInspector();
+    } catch (error) {
+      setGlobalHint(`运行命令失败：${error.message}`);
+    }
+  }
+
+  useEffect(() => {
+    void refreshFileTree(ideScope);
+    setSelectedFile(null);
+    setOriginalFileContent("");
+    setEditedFileContent("");
+  }, [ideScope]);
 
   async function uploadFilesForSession(files) {
     const fileList = Array.from(files || []);
@@ -840,6 +936,37 @@ function App() {
             sessionId={selectedSessionId}
           />
           {globalHint && <div className="global-hint">{globalHint}</div>}
+        </section>
+
+        <section className="ide-workbench">
+          <FileExplorer
+            treeData={fileTreeState.data}
+            loading={fileTreeState.loading}
+            error={fileTreeState.error}
+            scope={ideScope}
+            onScopeChange={setIdeScope}
+            onRefresh={() => refreshFileTree(ideScope)}
+            selectedPath={selectedFile?.path || ""}
+            onSelect={openIdeFile}
+          />
+          <CodeEditorPanel
+            selectedFile={selectedFile}
+            originalContent={originalFileContent}
+            editedContent={editedFileContent}
+            onChange={setEditedFileContent}
+            onSave={saveIdeFile}
+            saving={savingFile}
+          />
+          <TerminalPanel
+            sessionId={selectedSessionId}
+            onRunCommand={handleRunShellCommand}
+            approvals={approvalItems}
+            approvalBusyId={approvalBusyId}
+            onApprove={handleApproveApproval}
+            onReject={handleRejectApproval}
+            liveShellLines={liveShellLines}
+            shellLogs={shellLogItems}
+          />
         </section>
       </main>
 
