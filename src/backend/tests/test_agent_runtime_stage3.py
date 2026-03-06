@@ -9,6 +9,7 @@ from app.memory.manager import MemoryManager
 from app.models.message import ChatMessage, Role
 from app.skills.loader import SkillLoader
 from app.tools.builtins.file_tool import FileTool
+from app.tools.builtins.workspace_tool import WorkspaceTool
 from app.tools.executor import ToolExecutor
 from app.tools.registry import ToolRegistry
 from app.workspace.manager import WorkspaceManager
@@ -32,6 +33,7 @@ def _build_runtime(tmp_path: Path) -> AgentRuntime:
 
     registry = ToolRegistry()
     registry.register(FileTool(workspace_manager))
+    registry.register(WorkspaceTool(workspace_manager))
     tool_executor = ToolExecutor(registry)
 
     return AgentRuntime.from_settings(
@@ -103,3 +105,45 @@ def test_planner_and_prompt_builder_stage3() -> None:
     assert "[CONTEXT]" in prompt.full_prompt
     assert "[MEMORY]" in prompt.full_prompt
     assert "[USER]" in prompt.full_prompt
+
+
+def test_natural_language_write_supports_unicode_filename_and_content(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+
+    import asyncio
+
+    turn = asyncio.run(
+        runtime.run_turn(
+            agent_id="main",
+            session_id="s-write-cn",
+            user_message='在工作区根目录创建“你好124.txt”，并且写入数据12314561',
+            history=[],
+        )
+    )
+
+    workspace = Path(runtime.get_agent_snapshot("main")["workspace"])
+    target = workspace / "你好124.txt"
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "12314561"
+    assert turn.reply
+
+
+def test_planner_uses_workspace_context_for_bugfix_request_without_path() -> None:
+    planner = Planner(max_iterations=3)
+    model_output = ModelOutput(
+        text="该任务可能需要工具信息支撑，先尝试工具调用。",
+        should_call_tool=True,
+        should_continue=True,
+        tool_hint="file",
+    )
+
+    plan = planner.plan(
+        user_message="The webpage I opened cannot write files. Help me fix the bug. The project is already open in VSCode.",
+        model_output=model_output,
+        iteration=0,
+        tool_traces=[],
+    )
+
+    assert plan.tool_calls
+    assert plan.tool_calls[0].name == "workspace"
+    assert plan.tool_calls[0].args == {"action": "list"}

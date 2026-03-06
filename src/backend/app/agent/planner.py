@@ -8,8 +8,56 @@ from app.agent.types import ModelOutput, ToolCall, ToolCallTrace
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s]+", flags=re.IGNORECASE)
-_FILE_NAME_PATTERN = re.compile(r"([A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)")
+_QUOTED_FILE_PATH_PATTERN = re.compile(r"[\"'`“”‘’《》「」『』【】]([^\"'`“”‘’《》「」『』【】]+?\.[A-Za-z0-9]{1,16})[\"'`“”‘’《》「」『』【】]")
+_FILE_PATH_PATTERN = re.compile(r"((?:[\w.-]+[\\/])*(?:[\w.-]+)\.[A-Za-z0-9]{1,16})", flags=re.UNICODE)
 _FOLDER_NAME_PATTERN = re.compile(r"文件夹\s*([A-Za-z0-9_\-]+)|目录\s*([A-Za-z0-9_\-]+)")
+_WRITE_CONTENT_PATTERNS = (
+    re.compile(r"(?:写入(?:内容|数据)?|写上|填入|内容(?:为|是))\s*[:：]?\s*[\"'`“”‘’]?(.*?)[\"'`“”‘’]?\s*$"),
+    re.compile(r"(?:with\s+content|content\s*(?:is|=))\s*[\"'`]?(.+?)[\"'`]?\s*$", flags=re.IGNORECASE),
+)
+
+_CREATE_FILE_TOKENS = (
+    "创建文件",
+    "新建文件",
+    "create file",
+    "create a file",
+)
+
+_MODIFY_FILE_TOKENS = (
+    "修改",
+    "修复",
+    "编辑",
+    "更新",
+    "替换",
+    "fix",
+    "debug",
+    "bug",
+)
+
+_CODE_DEBUG_TOKENS = (
+    "bug",
+    "fix",
+    "debug",
+    "vscode",
+    "project",
+    "repo",
+    "代码",
+    "网页",
+    "前端",
+    "后端",
+    "工程",
+    "项目",
+)
+
+_READ_FILE_TOKENS = (
+    "readme",
+    "读取文件",
+    "打开文件",
+    "查看文件",
+    "read file",
+    "open file",
+    "show file",
+)
 
 
 @dataclass(slots=True)
@@ -160,6 +208,8 @@ class Planner:
     def _natural_language_commands(self, user_message: str) -> list[ToolCall]:
         normalized = user_message.replace("，", ",").strip()
         lower = normalized.lower()
+        file_path = _extract_file_path(normalized)
+        write_content = _extract_write_content(normalized)
 
         if any(token in normalized for token in ["创建文件夹", "创建目录", "新建文件夹", "新建目录"]):
             folder_match = _FOLDER_NAME_PATTERN.search(normalized)
@@ -167,21 +217,28 @@ class Planner:
             if folder_name:
                 return [ToolCall(name="file", args={"action": "mkdir", "path": folder_name}, reason="natural_language_mkdir")]
 
+        if file_path and (write_content is not None or _is_create_file_request(normalized)):
+            return [
+                ToolCall(
+                    name="file",
+                    args={"action": "write", "path": file_path, "content": write_content or ""},
+                    reason="natural_language_file_write",
+                )
+            ]
+
+        if file_path and _is_modify_file_request(normalized):
+            return [ToolCall(name="file", args={"action": "read", "path": file_path}, reason="natural_language_file_modify_inspect")]
+
         if any(token in normalized for token in ["工作目录", "当前目录", "workspace", "工作区"]):
             return [ToolCall(name="workspace", args={"action": "info"}, reason="workspace_location_info")]
-
-        if any(token in normalized for token in ["创建文件", "新建文件", "写入文件", "保存文件"]):
-            file_match = _FILE_NAME_PATTERN.search(normalized)
-            if file_match:
-                file_name = file_match.group(1)
-                return [ToolCall(name="file", args={"action": "write", "path": file_name, "content": ""}, reason="natural_language_file_create")]
 
         if any(token in normalized for token in ["现在几点", "当前时间", "几点了", "时间是多少"]):
             return [ToolCall(name="time", args={"format": "human"}, reason="natural_language_time")]
 
-        if any(token in lower for token in ["readme", "读取文件", "打开文件", "查看文件"]):
-            file_match = _FILE_NAME_PATTERN.search(normalized)
-            path = file_match.group(1) if file_match else "README.md"
+        if any(token in lower for token in _READ_FILE_TOKENS):
+            path = file_path or ("README.md" if "readme" in lower else None)
+            if not path:
+                return []
             return [ToolCall(name="file", args={"action": "read", "path": path}, reason="natural_language_file_read")]
 
         if any(token in lower for token in ["访问", "请求", "抓取", "api", "网址", "网页"]):
@@ -203,13 +260,27 @@ class Planner:
             return []
 
         if hint == "file":
-            file_match = _FILE_NAME_PATTERN.search(user_message)
-            path = file_match.group(1) if file_match else "README.md"
-            action = "write" if any(token in user_message for token in ["创建", "写", "保存"]) and file_match else "read"
-            args = {"action": action, "path": path}
-            if action == "write":
-                args["content"] = ""
-            return [ToolCall(name="file", args=args, reason="model_file_hint")]
+            file_path = _extract_file_path(user_message)
+            write_content = _extract_write_content(user_message)
+
+            if file_path:
+                if write_content is not None or _is_create_file_request(user_message):
+                    return [
+                        ToolCall(
+                            name="file",
+                            args={"action": "write", "path": file_path, "content": write_content or ""},
+                            reason="model_file_hint_write",
+                        )
+                    ]
+                return [ToolCall(name="file", args={"action": "read", "path": file_path}, reason="model_file_hint_read")]
+
+            if _is_code_debug_request(user_message):
+                return [ToolCall(name="workspace", args={"action": "list"}, reason="model_debug_workspace_hint")]
+
+            if "readme" in user_message.lower():
+                return [ToolCall(name="file", args={"action": "read", "path": "README.md"}, reason="model_file_hint_readme")]
+
+            return []
 
         if hint == "workspace":
             return [ToolCall(name="workspace", args={"action": "info"}, reason="model_workspace_hint")]
@@ -221,3 +292,47 @@ class Planner:
             return [ToolCall(name="shell", args={"input": "Get-Location"}, reason="model_shell_hint_default")]
 
         return []
+
+
+def _extract_file_path(text: str) -> str | None:
+    for pattern in (_QUOTED_FILE_PATH_PATTERN, _FILE_PATH_PATTERN):
+        match = pattern.search(text)
+        if not match:
+            continue
+        candidate = str(match.group(1)).strip().rstrip("。，,;；:：)]}》」』】")
+        if not candidate or _URL_PATTERN.fullmatch(candidate):
+            continue
+        return candidate.replace("\\", "/")
+    return None
+
+
+def _extract_write_content(text: str) -> str | None:
+    for pattern in _WRITE_CONTENT_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        value = str(match.group(1)).strip().strip("\"'`“”‘’")
+        if value:
+            return value.rstrip("。；;")
+    return None
+
+
+def _is_create_file_request(text: str) -> bool:
+    lower = text.lower()
+    return (
+        any(token in text for token in _CREATE_FILE_TOKENS)
+        or any(token in lower for token in _CREATE_FILE_TOKENS)
+        or "创建" in text
+        or "新建" in text
+        or "create" in lower
+    )
+
+
+def _is_modify_file_request(text: str) -> bool:
+    lower = text.lower()
+    return any(token in text for token in _MODIFY_FILE_TOKENS) or any(token in lower for token in _MODIFY_FILE_TOKENS)
+
+
+def _is_code_debug_request(text: str) -> bool:
+    lower = text.lower()
+    return any(token in text for token in _CODE_DEBUG_TOKENS) or any(token in lower for token in _CODE_DEBUG_TOKENS)
