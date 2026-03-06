@@ -29,3 +29,23 @@ class ChatMessage:
             for item in self.attachments
         )
         return f"[{self.role.value}] {self.content} [attachments: {attachment_text}]"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "role": self.role.value,
+            "content": self.content,
+            "attachments": list(self.attachments),
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ChatMessage":
+        role_value = str(payload.get("role") or Role.USER.value)
+        timestamp_value = payload.get("timestamp")
+        timestamp = datetime.fromisoformat(str(timestamp_value)) if timestamp_value else datetime.now(timezone.utc)
+        return cls(
+            role=Role(role_value),
+            content=str(payload.get("content") or ""),
+            attachments=list(payload.get("attachments") or []),
+            timestamp=timestamp,
+        )

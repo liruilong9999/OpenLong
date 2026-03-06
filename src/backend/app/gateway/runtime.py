@@ -52,9 +52,9 @@ class GatewayRuntime:
     def from_settings(cls, settings: Settings) -> "GatewayRuntime":
         # 缁熶竴鍒涘缓鍚勫瓙绯荤粺瀹炰緥锛屽舰鎴愮綉鍏宠繍琛屾椂渚濊禆鍥俱€?
         event_bus = EventBus()
-        session_manager = SessionManager()
         websocket_hub = WebSocketHub()
         workspace_manager = WorkspaceManager(settings.workspace_root)
+        session_manager = SessionManager(storage_dir=workspace_manager.workspace_root / "_sessions")
         memory_manager = MemoryManager(workspace_manager, event_bus=event_bus)
         skill_loader = SkillLoader(workspace_manager)
 
@@ -106,8 +106,20 @@ class GatewayRuntime:
             agent_runtime=agent_runtime,
         )
         runtime._register_event_handlers()
+        runtime._restore_session_runtime_state()
         runtime._sync_workspace_runtime_docs("main")
         return runtime
+
+    def _restore_session_runtime_state(self) -> None:
+        for session in self.session_manager.list_sessions(include_closed=True):
+            agent_id = str(session.get("agent_id") or "main")
+            self.agent_manager.create_agent(agent_id)
+            if session.get("status") != "active":
+                continue
+            self.agent_manager.assign_session(
+                session_id=str(session["session_id"]),
+                preferred_agent_id=agent_id,
+            )
 
     def _register_event_handlers(self) -> None:
         relay_events = [

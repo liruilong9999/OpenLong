@@ -1,6 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -13,10 +16,14 @@ def _utc_now() -> datetime:
 
 
 class SessionManager:
-    def __init__(self, ttl_seconds: int = 24 * 3600) -> None:
+    def __init__(self, ttl_seconds: int = 24 * 3600, storage_dir: str | Path | None = None) -> None:
         self._sessions: dict[str, SessionRecord] = {}
         self._ttl_seconds = ttl_seconds
         self._lock = Lock()
+        self._storage_dir = Path(storage_dir).resolve() if storage_dir else None
+        if self._storage_dir is not None:
+            self._storage_dir.mkdir(parents=True, exist_ok=True)
+            self._load_from_disk()
 
     def create_session(
         self,
@@ -31,6 +38,7 @@ class SessionManager:
 
             record = SessionRecord(session_id=session_id, agent_id=agent_id, metadata=metadata or {})
             self._sessions[session_id] = record
+            self._persist_session(record)
             return record
 
     def get_or_create(self, session_id: str, agent_id: str = "main") -> SessionRecord:
@@ -45,6 +53,7 @@ class SessionManager:
             session = self._sessions[session_id]
             session.agent_id = agent_id
             session.touch()
+            self._persist_session(session)
             return session
 
     def append_message(self, session_id: str, message: ChatMessage) -> None:
@@ -52,6 +61,7 @@ class SessionManager:
             session = self._sessions[session_id]
             session.messages.append(message)
             session.touch()
+            self._persist_session(session)
 
     def close_session(self, session_id: str, reason: str = "manual") -> bool:
         with self._lock:
@@ -66,6 +76,7 @@ class SessionManager:
             session.closed_at = _utc_now()
             session.metadata["close_reason"] = reason
             session.touch()
+            self._persist_session(session)
             return True
 
     def expire_inactive(self) -> list[str]:
@@ -81,25 +92,18 @@ class SessionManager:
                     session.status = SessionStatus.EXPIRED
                     session.closed_at = now
                     session.touch()
+                    self._persist_session(session)
                     expired_ids.append(session.session_id)
 
         return expired_ids
 
-    def get_history(self, session_id: str, limit: int = 100) -> list[dict[str, str]]:
+    def get_history(self, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
                 return []
 
-            return [
-                {
-                    "role": item.role.value,
-                    "content": item.content,
-                    "timestamp": item.timestamp.isoformat(),
-                    "attachments": item.attachments,
-                }
-                for item in session.messages[-limit:]
-            ]
+            return [item.to_dict() for item in session.messages[-limit:]]
 
     def get_session_snapshot(self, session_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -145,3 +149,39 @@ class SessionManager:
     def active_count(self) -> int:
         with self._lock:
             return sum(1 for item in self._sessions.values() if item.status == SessionStatus.ACTIVE)
+
+    def flush_all(self) -> None:
+        with self._lock:
+            for session in self._sessions.values():
+                self._persist_session(session)
+
+    def _load_from_disk(self) -> None:
+        if self._storage_dir is None:
+            return
+
+        loaded: dict[str, SessionRecord] = {}
+        for session_file in sorted(self._storage_dir.glob("*.json"), key=lambda item: item.name):
+            try:
+                payload = json.loads(session_file.read_text(encoding="utf-8"))
+                session = SessionRecord.from_dict(payload)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+
+            if not session.session_id:
+                continue
+            loaded[session.session_id] = session
+
+        self._sessions.update(loaded)
+
+    def _persist_session(self, session: SessionRecord) -> None:
+        if self._storage_dir is None:
+            return
+
+        target = self._session_file(session.session_id)
+        temp = target.with_suffix(".json.tmp")
+        temp.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(target)
+
+    def _session_file(self, session_id: str) -> Path:
+        assert self._storage_dir is not None
+        return self._storage_dir / f"{sha256(session_id.encode('utf-8')).hexdigest()}.json"
