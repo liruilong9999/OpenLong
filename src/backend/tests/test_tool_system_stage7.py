@@ -138,3 +138,28 @@ def test_tool_debug_api_and_logs() -> None:
     dash = dashboard_resp.json()
     assert "registry" in dash
     assert "logs" in dash
+
+
+def test_file_tool_writes_project_relative_paths_outside_workspace(tmp_path: Path) -> None:
+    import asyncio
+
+    project_root = tmp_path / "project"
+    (project_root / "src" / "backend").mkdir(parents=True, exist_ok=True)
+    workspace_root = tmp_path / "workspace"
+
+    manager = WorkspaceManager(str(workspace_root), project_root=str(project_root))
+    tool = FileTool(manager)
+
+    result = asyncio.run(
+        tool.run(
+            action="write",
+            path="src/backend/web-tool.txt",
+            content="project-write",
+            agent_id="main",
+        )
+    )
+
+    assert result.success is True
+    assert result.data["scope"] == "project"
+    assert (project_root / "src" / "backend" / "web-tool.txt").read_text(encoding="utf-8") == "project-write"
+    assert not (manager.ensure_agent_workspace("main") / "src" / "backend" / "web-tool.txt").exists()

@@ -87,9 +87,10 @@ def _utc_now() -> datetime:
 
 
 class WorkspaceManager:
-    def __init__(self, workspace_root: str) -> None:
-        repo_root = Path(__file__).resolve().parents[4]
-        self._workspace_root = (repo_root / workspace_root).resolve()
+    def __init__(self, workspace_root: str, project_root: str | None = None) -> None:
+        default_project_root = Path(__file__).resolve().parents[4]
+        self._project_root = Path(project_root).resolve() if project_root else default_project_root
+        self._workspace_root = (self._project_root / workspace_root).resolve()
         self._workspace_root.mkdir(parents=True, exist_ok=True)
         (self._workspace_root / WORKSPACE_EXPORT_DIR).mkdir(parents=True, exist_ok=True)
         (self._workspace_root / WORKSPACE_TEMPLATE_DIR).mkdir(parents=True, exist_ok=True)
@@ -98,6 +99,10 @@ class WorkspaceManager:
     @property
     def workspace_root(self) -> Path:
         return self._workspace_root
+
+    @property
+    def project_root(self) -> Path:
+        return self._project_root
 
     def workspace_exists(self, agent_id: str) -> bool:
         return self._workspace_path(agent_id).exists()

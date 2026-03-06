@@ -27,7 +27,7 @@ from app.tools.sandbox import ToolSandbox
 from app.workspace.manager import WorkspaceManager
 
 
-def _build_runtime(tmp_path: Path) -> GatewayRuntime:
+def _build_runtime(tmp_path: Path, project_root: Path | None = None) -> GatewayRuntime:
     settings = SimpleNamespace(
         app_name="OpenLong",
         environment="test",
@@ -47,7 +47,7 @@ def _build_runtime(tmp_path: Path) -> GatewayRuntime:
     event_bus = EventBus()
     session_manager = SessionManager()
     websocket_hub = WebSocketHub()
-    workspace_manager = WorkspaceManager(settings.workspace_root)
+    workspace_manager = WorkspaceManager(settings.workspace_root, project_root=str(project_root) if project_root else None)
     memory_manager = MemoryManager(workspace_manager, event_bus=event_bus)
     skill_loader = SkillLoader(workspace_manager)
 
@@ -202,3 +202,22 @@ def test_conversation_followups_and_time(tmp_path: Path) -> None:
     )
     assert "工具执行完成" in third["reply"]
     assert "time" in third["reply"]
+
+
+def test_write_command_targets_project_file_when_repo_path_is_requested(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    (project_root / "src" / "backend").mkdir(parents=True, exist_ok=True)
+    runtime = _build_runtime(tmp_path, project_root=project_root)
+
+    result = asyncio.run(
+        runtime.handle_user_message(
+            session_id="project-write-s1",
+            user_message="/write src/backend/from-web.txt hello-project",
+            preferred_agent_id="main",
+            source="test",
+        )
+    )
+
+    assert result["reply"]
+    assert (project_root / "src" / "backend" / "from-web.txt").read_text(encoding="utf-8") == "hello-project"
+    assert not (Path(runtime.workspace_manager.load_workspace("main")["path"]) / "src" / "backend" / "from-web.txt").exists()
