@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 import re
+from typing import Any
 
 from app.agent.model_client import ModelClient, ModelRequest
 from app.agent.planner import Planner, TurnPlan
@@ -52,6 +53,7 @@ class AgentLoop:
         *,
         agent: Agent,
         session_id: str,
+        task_type: str,
         user_message: str,
         attachments: list[dict[str, object]] | None,
         history: list[ChatMessage],
@@ -60,6 +62,9 @@ class AgentLoop:
         skills: list[SkillSpec],
         matched_skills: list[SkillSpec],
         task_id: str,
+        model_routes: list[dict[str, Any]] | None = None,
+        model_route_source: str = "default",
+        attempt_observer: Any = None,
     ) -> LoopResult:
         scratchpad_lines: list[str] = []
         tool_traces: list[ToolCallTrace] = []
@@ -85,8 +90,12 @@ class AgentLoop:
                     user_message=user_message,
                     prompt=prompt_bundle.full_prompt,
                     iteration=iteration,
+                    task_type=task_type,
                     tool_summaries=[trace.content[:240] for trace in tool_traces],
                     attachments=list(attachments or []),
+                    model_routes=list(model_routes or []),
+                    model_route_source=model_route_source,
+                    attempt_observer=attempt_observer,
                 )
             )
             model_outputs.append(model_output)

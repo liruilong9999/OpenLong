@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import re
 from time import perf_counter
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import httpx
 
@@ -25,8 +25,12 @@ class ModelRequest:
     user_message: str
     prompt: str
     iteration: int
+    task_type: str = "chat"
     tool_summaries: list[str] = field(default_factory=list)
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    model_routes: list[dict[str, Any]] = field(default_factory=list)
+    model_route_source: str = "default"
+    attempt_observer: Callable[..., None] | None = None
 
 
 class ModelClient(Protocol):
@@ -191,47 +195,165 @@ class OpenAICompatibleModelClient:
         )
 
     async def generate(self, request: ModelRequest) -> ModelOutput:
-        if not self._base_url or not self._model or not self._api_key:
-            fallback_output = await self._fallback.generate(request)
-            fallback_output.metadata = {**fallback_output.metadata, "mode": "missing_model_config"}
-            return fallback_output
+        route_endpoints = request.model_routes or [self._default_route_endpoint()]
+        attempts: list[dict[str, Any]] = []
+        resolved_endpoints = [self._resolve_route_endpoint(item) for item in route_endpoints]
 
-        if _model_api_disabled():
-            fallback_output = await self._fallback.generate(request)
-            fallback_output.metadata = {**fallback_output.metadata, "mode": "model_api_disabled"}
-            return fallback_output
-
-        started = perf_counter()
-        try:
-            text = await self._responses_api(request)
-            tool_hint = self._heuristic._guess_tool_hint(request.user_message)
-            return ModelOutput(
-                text=text,
-                confidence=0.9,
-                should_call_tool=False,
-                should_continue=False,
-                tool_hint=tool_hint,
-                metadata={
-                    "mode": "external_api",
-                    "provider": self._provider,
-                    "model": self._model,
-                    "latency_ms": round((perf_counter() - started) * 1000, 3),
-                },
+        if resolved_endpoints and all(
+            not endpoint["base_url"] or not endpoint["model"] or not endpoint["api_key"]
+            for endpoint in resolved_endpoints
+        ):
+            missing = resolved_endpoints[0]
+            self._notify_attempt(
+                request,
+                endpoint=missing,
+                success=False,
+                latency_ms=0.0,
+                error="API key or model config missing",
+                endpoint_index=0,
             )
-        except Exception as exc:
             fallback_output = await self._fallback.generate(request)
             fallback_output.metadata = {
                 **fallback_output.metadata,
-                "mode": "external_api_fallback",
-                "provider": self._provider,
-                "model": self._model,
-                "error": str(exc),
+                "mode": "missing_model_config",
+                "route_source": request.model_route_source,
+                "attempts": [
+                    {
+                        "provider": missing["provider"],
+                        "model": missing["model"],
+                        "success": False,
+                        "error": "API key or model config missing",
+                        "endpoint_index": 0,
+                    }
+                ],
             }
             return fallback_output
 
-    async def _responses_api(self, request: ModelRequest) -> str:
+        if _model_api_disabled():
+            skipped = resolved_endpoints[0] if resolved_endpoints else self._default_route_endpoint()
+            self._notify_attempt(
+                request,
+                endpoint=skipped,
+                success=False,
+                latency_ms=0.0,
+                error="model api disabled",
+                endpoint_index=0,
+            )
+            fallback_output = await self._fallback.generate(request)
+            fallback_output.metadata = {
+                **fallback_output.metadata,
+                "mode": "model_api_disabled",
+                "route_source": request.model_route_source,
+                "attempts": [
+                    {
+                        "provider": skipped.get("provider") or self._provider,
+                        "model": skipped.get("model") or self._model,
+                        "success": False,
+                        "error": "model api disabled",
+                        "endpoint_index": 0,
+                    }
+                ],
+            }
+            return fallback_output
+
+        missing_config_count = 0
+        for endpoint_index, resolved in enumerate(resolved_endpoints):
+            if not resolved["base_url"] or not resolved["model"] or not resolved["api_key"]:
+                missing_config_count += 1
+                error = "API key or model config missing"
+                attempts.append(
+                    {
+                        "provider": resolved["provider"],
+                        "model": resolved["model"],
+                        "success": False,
+                        "error": error,
+                        "endpoint_index": endpoint_index,
+                    }
+                )
+                self._notify_attempt(
+                    request,
+                    endpoint=resolved,
+                    success=False,
+                    latency_ms=0.0,
+                    error=error,
+                    endpoint_index=endpoint_index,
+                )
+                continue
+
+            started = perf_counter()
+            try:
+                text = await self._responses_api(request, endpoint=resolved)
+                latency_ms = round((perf_counter() - started) * 1000, 3)
+                attempts.append(
+                    {
+                        "provider": resolved["provider"],
+                        "model": resolved["model"],
+                        "success": True,
+                        "error": None,
+                        "endpoint_index": endpoint_index,
+                    }
+                )
+                self._notify_attempt(
+                    request,
+                    endpoint=resolved,
+                    success=True,
+                    latency_ms=latency_ms,
+                    error=None,
+                    endpoint_index=endpoint_index,
+                )
+                tool_hint = self._heuristic._guess_tool_hint(request.user_message)
+                return ModelOutput(
+                    text=text,
+                    confidence=0.9,
+                    should_call_tool=False,
+                    should_continue=False,
+                    tool_hint=tool_hint,
+                    metadata={
+                        "mode": "external_api",
+                        "provider": resolved["provider"],
+                        "model": resolved["model"],
+                        "latency_ms": latency_ms,
+                        "route_source": request.model_route_source,
+                        "endpoint_index": endpoint_index,
+                        "attempts": attempts,
+                    },
+                )
+            except Exception as exc:
+                latency_ms = round((perf_counter() - started) * 1000, 3)
+                attempts.append(
+                    {
+                        "provider": resolved["provider"],
+                        "model": resolved["model"],
+                        "success": False,
+                        "error": str(exc),
+                        "endpoint_index": endpoint_index,
+                    }
+                )
+                self._notify_attempt(
+                    request,
+                    endpoint=resolved,
+                    success=False,
+                    latency_ms=latency_ms,
+                    error=str(exc),
+                    endpoint_index=endpoint_index,
+                )
+
+        fallback_output = await self._fallback.generate(request)
+        fallback_mode = "missing_model_config" if missing_config_count == len(route_endpoints) else "external_api_fallback"
+        fallback_output.metadata = {
+            **fallback_output.metadata,
+            "mode": fallback_mode,
+            "provider": attempts[0]["provider"] if attempts else self._provider,
+            "model": attempts[0]["model"] if attempts else self._model,
+            "error": next((item["error"] for item in reversed(attempts) if item.get("error")), "model route exhausted"),
+            "route_source": request.model_route_source,
+            "attempts": attempts,
+        }
+        return fallback_output
+
+    async def _responses_api(self, request: ModelRequest, *, endpoint: dict[str, Any]) -> str:
         headers = {
-            "Authorization": f"Bearer {self._api_key}",
+            "Authorization": f"Bearer {endpoint['api_key']}",
             "Content-Type": "application/json",
         }
         user_content = [
@@ -243,7 +365,7 @@ class OpenAICompatibleModelClient:
         user_content.extend(self._attachment_content(request.attachments))
 
         payload = {
-            "model": self._model,
+            "model": endpoint["model"],
             "input": [
                 {
                     "role": "system",
@@ -260,11 +382,11 @@ class OpenAICompatibleModelClient:
                 },
             ],
         }
-        if self._reasoning_effort:
-            payload["reasoning"] = {"effort": self._reasoning_effort}
+        if endpoint["reasoning_effort"]:
+            payload["reasoning"] = {"effort": endpoint["reasoning_effort"]}
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(self._responses_endpoint(), headers=headers, json=payload)
+            response = await client.post(self._responses_endpoint(endpoint["base_url"]), headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
             content = self._extract_responses_text(data)
@@ -344,8 +466,50 @@ class OpenAICompatibleModelClient:
             ".c", ".cpp", ".h", ".hpp", ".java", ".go", ".rs",
         }
 
-    def _responses_endpoint(self) -> str:
-        base = self._base_url.rstrip("/")
+    def _default_route_endpoint(self) -> dict[str, Any]:
+        return {
+            "provider": self._provider,
+            "base_url": self._base_url,
+            "model": self._model,
+            "reasoning_effort": self._reasoning_effort,
+            "api_key": self._api_key,
+            "has_api_key": bool(self._api_key),
+        }
+
+    def _resolve_route_endpoint(self, endpoint: dict[str, Any]) -> dict[str, Any]:
+        default = self._default_route_endpoint()
+        return {
+            "provider": str(endpoint.get("provider") or default["provider"]),
+            "base_url": str(endpoint.get("base_url") or default["base_url"]),
+            "model": str(endpoint.get("model") or default["model"]),
+            "reasoning_effort": str(endpoint.get("reasoning_effort") or default["reasoning_effort"]),
+            "api_key": str(endpoint.get("api_key") or default["api_key"]),
+            "has_api_key": bool(endpoint.get("api_key") or default["api_key"]),
+        }
+
+    def _notify_attempt(
+        self,
+        request: ModelRequest,
+        *,
+        endpoint: dict[str, Any],
+        success: bool,
+        latency_ms: float,
+        error: str | None,
+        endpoint_index: int,
+    ) -> None:
+        if request.attempt_observer is None:
+            return
+        request.attempt_observer(
+            provider=str(endpoint.get("provider") or self._provider),
+            model=str(endpoint.get("model") or self._model),
+            success=success,
+            latency_ms=latency_ms,
+            error=error,
+            endpoint_index=endpoint_index,
+        )
+
+    def _responses_endpoint(self, base_url: str) -> str:
+        base = base_url.rstrip("/")
         if base.endswith("/v1"):
             return f"{base}/responses"
         return f"{base}/v1/responses"

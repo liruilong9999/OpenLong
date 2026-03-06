@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from app.agent.loop import AgentLoop
@@ -18,6 +19,9 @@ from app.skills.types import SkillSpec
 from app.tools.executor import ToolExecutor
 from app.workspace.manager import WorkspaceManager
 
+if TYPE_CHECKING:
+    from app.gateway.model_router import ModelRouter
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -31,10 +35,12 @@ class AgentRuntime:
         skill_loader: SkillLoader,
         tool_executor: ToolExecutor,
         model_client: ModelClient,
+        model_router: "ModelRouter | None" = None,
     ) -> None:
         self._workspace_manager = workspace_manager
         self._memory_manager = memory_manager
         self._skill_loader = skill_loader
+        self._model_router = model_router
 
         self._planner = Planner(max_iterations=3)
         self._prompt_builder = PromptBuilder()
@@ -58,6 +64,7 @@ class AgentRuntime:
         memory_manager: MemoryManager,
         skill_loader: SkillLoader,
         tool_executor: ToolExecutor,
+        model_router: "ModelRouter | None" = None,
     ) -> "AgentRuntime":
         model_client = OpenAICompatibleModelClient.from_settings(
             settings,
@@ -69,6 +76,7 @@ class AgentRuntime:
             skill_loader=skill_loader,
             tool_executor=tool_executor,
             model_client=model_client,
+            model_router=model_router,
         )
 
     def exists(self, agent_id: str) -> bool:
@@ -122,6 +130,7 @@ class AgentRuntime:
         user_message: str,
         history: list[ChatMessage],
         attachments: list[dict[str, Any]] | None = None,
+        task_type: str = "chat",
     ) -> AgentTurnResult:
         agent = self.get_or_create(agent_id)
         skills, matched_skills = self._resolve_skills(agent_id, user_message)
@@ -136,10 +145,26 @@ class AgentRuntime:
         try:
             context_block = self._workspace_manager.load_context_block(agent_id)
             memories = self._memory_manager.retrieve(agent_id=agent_id, query=user_message)
+            route_payload = (
+                self._model_router.route_request_payload(agent_id=agent_id, task_type=task_type)
+                if self._model_router is not None
+                else {"source": "default", "endpoints": []}
+            )
+            observer = (
+                self._model_router.attempt_observer(
+                    agent_id=agent_id,
+                    task_type=task_type,
+                    session_id=session_id,
+                    route_source=route_payload["source"],
+                )
+                if self._model_router is not None
+                else None
+            )
 
             loop_result = await self._loop.run(
                 agent=agent,
                 session_id=session_id,
+                task_type=task_type,
                 user_message=user_message,
                 attachments=attachments,
                 history=history,
@@ -148,6 +173,9 @@ class AgentRuntime:
                 skills=skills,
                 matched_skills=matched_skills,
                 task_id=task.task_id,
+                model_routes=route_payload["endpoints"],
+                model_route_source=route_payload["source"],
+                attempt_observer=observer,
             )
 
             for entry in loop_result.memory_entries:

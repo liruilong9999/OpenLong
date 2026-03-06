@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     openai_model: str = Field(default=DEFAULT_OPENAI_MODEL)
     openai_reasoning_effort: str = Field(default=DEFAULT_OPENAI_REASONING_EFFORT)
     openai_api_key: str = Field(default="")
+    model_routes: str = Field(default="")
+    model_routes_path: str = Field(default="")
 
     workspace_root: str = Field(default="workspace")
     tool_profile: str = Field(default="coding")
@@ -158,6 +160,13 @@ def _hydrate_from_key_file(settings: Settings) -> Settings:
         )
     if not settings.openai_api_key:
         settings.openai_api_key = key_data.get("OPENAI_API_KEY", settings.openai_api_key)
+    if not settings.model_routes:
+        settings.model_routes = key_data.get("MODEL_ROUTES", key_data.get("model_routes", settings.model_routes))
+    if not settings.model_routes_path:
+        settings.model_routes_path = key_data.get(
+            "MODEL_ROUTES_PATH",
+            key_data.get("model_routes_path", settings.model_routes_path),
+        )
 
     return settings
 

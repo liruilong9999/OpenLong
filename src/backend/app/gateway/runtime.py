@@ -79,6 +79,7 @@ class GatewayRuntime:
             sandbox=ToolSandbox(),
             log_store=tool_log_store,
         )
+        model_router = ModelRouter(settings, event_bus=event_bus)
 
         agent_runtime = AgentRuntime.from_settings(
             settings=settings,
@@ -86,13 +87,14 @@ class GatewayRuntime:
             memory_manager=memory_manager,
             skill_loader=skill_loader,
             tool_executor=tool_executor,
+            model_router=model_router,
         )
 
         runtime = cls(
             settings=settings,
             session_manager=session_manager,
             agent_manager=AgentManager(agent_runtime),
-            model_router=ModelRouter(settings, event_bus=event_bus),
+            model_router=model_router,
             task_queue=TaskQueue(event_bus=event_bus),
             websocket_hub=websocket_hub,
             event_bus=event_bus,
@@ -578,22 +580,18 @@ class GatewayRuntime:
             ),
         )
 
-        await self.model_router.dispatch(
-            agent_id=session.agent_id,
-            task_type="chat",
-            prompt_preview=user_message[:200],
-            session_id=session_id,
-        )
+        task_type = self._resolve_task_type(user_message)
 
         async def _agent_turn() -> Any:
             self.event_bus.emit(
                 "agent.execution.started",
-                {"session_id": session_id, "agent_id": session.agent_id},
+                {"session_id": session_id, "agent_id": session.agent_id, "task_type": task_type},
             )
             try:
                 turn_result = await self.agent_runtime.run_turn(
                     agent_id=session.agent_id,
                     session_id=session_id,
+                    task_type=task_type,
                     user_message=user_message,
                     attachments=attachments,
                     history=session.messages,
@@ -606,6 +604,7 @@ class GatewayRuntime:
                         "session_id": session_id,
                         "agent_id": session.agent_id,
                         "error": str(exc),
+                        "task_type": task_type,
                     },
                 )
                 raise
@@ -617,6 +616,7 @@ class GatewayRuntime:
                     "agent_id": session.agent_id,
                     "reply_size": len(turn_result.reply),
                     "iterations": turn_result.iterations,
+                    "task_type": task_type,
                 },
             )
             return turn_result
@@ -917,8 +917,19 @@ class GatewayRuntime:
     def dashboard_models(self, limit: int = 100) -> dict[str, Any]:
         return {
             "stats": self.model_router.stats(),
+            "routes": self.model_router.route_snapshot(),
             "calls": self.model_router.recent_calls(limit=limit),
         }
+
+    def _resolve_task_type(self, user_message: str) -> str:
+        normalized = (user_message or "").lower()
+        if any(token in normalized for token in ["总结", "摘要", "总结一下", "summary", "summarize"]):
+            return "summary"
+        if any(token in normalized for token in ["记忆", "memory", "回忆", "recall"]):
+            return "memory"
+        if any(token in normalized for token in ["代码", "bug", "fix", "debug", "工程", "project", "repo", "前端", "后端"]):
+            return "coding"
+        return "chat"
 
     def dashboard_tools(self, limit: int = 100, tool_name: str | None = None) -> dict[str, Any]:
         return {

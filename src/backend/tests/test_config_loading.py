@@ -26,3 +26,25 @@ def test_key_file_overrides_default_model_settings(tmp_path: Path) -> None:
     assert hydrated.openai_model == "gpt-test-model"
     assert hydrated.openai_reasoning_effort == "high"
     assert hydrated.openai_api_key == "sk-test"
+
+
+def test_key_file_loads_model_route_config(tmp_path: Path) -> None:
+    key_file = tmp_path / "key.txt"
+    key_file.write_text(
+        "\n".join(
+            [
+                'name = "OpenAI"',
+                'base_url = "https://example.com"',
+                'model = "gpt-default"',
+                '"OPENAI_API_KEY": "sk-test"',
+                'MODEL_ROUTES = {"tasks":{"summary":[{"model":"gpt-summary"}]}}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(key_file_path=str(key_file))
+    hydrated = _hydrate_from_key_file(settings)
+
+    assert '"summary"' in hydrated.model_routes
+    assert '"gpt-summary"' in hydrated.model_routes
