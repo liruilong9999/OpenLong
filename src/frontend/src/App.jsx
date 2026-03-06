@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Children, isValidElement, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -1055,13 +1055,13 @@ function MarkdownMessage({ content }) {
       remarkPlugins={[remarkGfm]}
       components={{
         a: ({ node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
-        code: ({ inline, className, children, ...props }) => {
-          const value = String(children || "").replace(/\n$/, "");
-          if (inline) {
-            return <code className={className} {...props}>{children}</code>;
-          }
+        pre: ({ children }) => {
+          const child = Children.toArray(children).find(isValidElement);
+          const className = child?.props?.className;
+          const value = String(child?.props?.children || "").replace(/\n$/, "");
           return <CodeBlock className={className} value={value} />;
         },
+        code: ({ className, children, ...props }) => <code className={className} {...props}>{children}</code>,
       }}
     >
       {String(content || "")}
