@@ -20,6 +20,8 @@ except ImportError:
 
 
 _KEY_LINE = re.compile(r'^\s*"?([A-Za-z0-9_]+)"?\s*(=|:)\s*"?(.+?)"?\s*$')
+DEFAULT_OPENAI_MODEL = "gpt-5.3"
+DEFAULT_OPENAI_REASONING_EFFORT = "medium"
 
 
 def _load_env_values(settings_cls: type[BaseModel]) -> dict[str, str]:
@@ -70,13 +72,14 @@ class Settings(BaseSettings):
 
     model_provider: str = Field(default="")
     openai_base_url: str = Field(default="")
-    openai_model: str = Field(default="gpt-5.3")
-    openai_reasoning_effort: str = Field(default="medium")
+    openai_model: str = Field(default=DEFAULT_OPENAI_MODEL)
+    openai_reasoning_effort: str = Field(default=DEFAULT_OPENAI_REASONING_EFFORT)
     openai_api_key: str = Field(default="")
 
     workspace_root: str = Field(default="workspace")
+    tool_profile: str = Field(default="coding")
     tool_shell_enabled: bool = Field(default=False)
-    tool_allowlist: str = Field(default="file,http,shell,workspace,time")
+    tool_allowlist: str = Field(default="")
     tool_denylist: str = Field(default="")
     tool_confirmation_required: str = Field(default="shell")
     tool_log_limit: int = Field(default=5000)
@@ -144,9 +147,12 @@ def _hydrate_from_key_file(settings: Settings) -> Settings:
         settings.model_provider = key_data.get("name", settings.model_provider)
     if not settings.openai_base_url:
         settings.openai_base_url = key_data.get("base_url", settings.openai_base_url)
-    if not settings.openai_model:
+    if not settings.openai_model or settings.openai_model == DEFAULT_OPENAI_MODEL:
         settings.openai_model = key_data.get("model", settings.openai_model)
-    if settings.openai_reasoning_effort == "medium":
+    if (
+        not settings.openai_reasoning_effort
+        or settings.openai_reasoning_effort == DEFAULT_OPENAI_REASONING_EFFORT
+    ):
         settings.openai_reasoning_effort = key_data.get(
             "model_reasoning_effort", settings.openai_reasoning_effort
         )

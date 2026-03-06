@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 
 
 class Role(str, Enum):
@@ -16,7 +17,15 @@ class Role(str, Enum):
 class ChatMessage:
     role: Role
     content: str
+    attachments: list[dict[str, Any]] = field(default_factory=list)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_prompt_line(self) -> str:
-        return f"[{self.role.value}] {self.content}"
+        if not self.attachments:
+            return f"[{self.role.value}] {self.content}"
+
+        attachment_text = ", ".join(
+            str(item.get("filename") or item.get("saved_name") or item.get("relative_path") or "attachment")
+            for item in self.attachments
+        )
+        return f"[{self.role.value}] {self.content} [attachments: {attachment_text}]"

@@ -1,19 +1,35 @@
-﻿# OpenLong Backend Scaffold
+# OpenLong Backend
 
-This folder contains the Python backend scaffold based on the architecture document.
+## 当前能力
 
-## Key points
-- Gateway Runtime as the entry point
-- Agent Runtime with planner/prompt/tool loop placeholders
-- Context/Memory/Skill/Tool/Workspace systems scaffolded
-- Reserved extension modules: `channel` and `self_evolution`
+- `Gateway Runtime` 统一处理 API、会话、任务和事件
+- `Agent Runtime` 负责 Prompt、Planner、工具循环和回复生成
+- 工作区内自动维护 `AGENTS.md`、`TOOLS.md`、`HEARTBEAT.md`
+- 首轮成功对话后自动完成 `BOOTSTRAP.md`
+- 模型配置默认从仓库根目录 `doc/key.txt` 读取
 
-## Run (after installing deps)
+## 启动
+
+仓库根目录推荐：
+
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python start.py --reload
 ```
 
-## Tests
+需要联动前端时：
+
 ```bash
-pytest
+python start.py --reload --frontend
+```
+
+仅后端目录也可运行：
+
+```bash
+python -m app
+```
+
+## 测试
+
+```bash
+python -m pytest -q
 ```

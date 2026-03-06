@@ -140,6 +140,7 @@ class ToolExecutor:
 
     def permission_snapshot(self) -> dict[str, Any]:
         return {
+            "profile": self._permission_manager.profile,
             "allowlist": sorted(self._permission_manager.allowlist or set()),
             "denylist": sorted(self._permission_manager.denylist or set()),
             "confirmation_required": sorted(self._permission_manager.confirmation_required or set()),

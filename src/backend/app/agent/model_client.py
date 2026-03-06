@@ -1,6 +1,10 @@
 ﻿from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
+import mimetypes
+import os
+from pathlib import Path
 import re
 from time import perf_counter
 from typing import Any, Protocol
@@ -22,6 +26,7 @@ class ModelRequest:
     prompt: str
     iteration: int
     tool_summaries: list[str] = field(default_factory=list)
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ModelClient(Protocol):
@@ -35,6 +40,15 @@ class HeuristicModelClient:
         lower = user_message.lower()
         prompt = request.prompt
         tool_hint = self._guess_tool_hint(user_message)
+
+        if request.attachments and any(self._is_image_attachment(item) for item in request.attachments):
+            return ModelOutput(
+                text="我已收到图片附件，接下来会优先尝试结合视觉能力进行分析。",
+                confidence=0.72,
+                should_call_tool=False,
+                should_continue=False,
+                metadata={"mode": "image_attachment_hint", "prompt_chars": len(request.prompt)},
+            )
 
         if self._is_follow_up_success_query(lower) and self._prompt_contains_success(prompt):
             return ModelOutput(
@@ -127,6 +141,10 @@ class HeuristicModelClient:
 
         return None
 
+    def _is_image_attachment(self, item: dict[str, Any]) -> bool:
+        content_type = str(item.get("content_type") or item.get("type") or "").lower()
+        return content_type.startswith("image/")
+
     def _is_follow_up_success_query(self, lower: str) -> bool:
         return any(token in lower for token in ["创建好了吗", "成功了吗", "弄好了吗", "完成了吗"])
 
@@ -149,7 +167,7 @@ class OpenAICompatibleModelClient:
         model: str,
         api_key: str,
         reasoning_effort: str = "medium",
-        timeout: float = 60.0,
+        timeout: float = 20.0,
         fallback: ModelClient | None = None,
     ) -> None:
         self._provider = provider or "OpenAI"
@@ -178,9 +196,14 @@ class OpenAICompatibleModelClient:
             fallback_output.metadata = {**fallback_output.metadata, "mode": "missing_model_config"}
             return fallback_output
 
+        if _model_api_disabled():
+            fallback_output = await self._fallback.generate(request)
+            fallback_output.metadata = {**fallback_output.metadata, "mode": "model_api_disabled"}
+            return fallback_output
+
         started = perf_counter()
         try:
-            text = await self._responses_api(request.prompt)
+            text = await self._responses_api(request)
             tool_hint = self._heuristic._guess_tool_hint(request.user_message)
             return ModelOutput(
                 text=text,
@@ -206,11 +229,19 @@ class OpenAICompatibleModelClient:
             }
             return fallback_output
 
-    async def _responses_api(self, prompt: str) -> str:
+    async def _responses_api(self, request: ModelRequest) -> str:
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+        user_content = [
+            {
+                "type": "input_text",
+                "text": request.prompt,
+            }
+        ]
+        user_content.extend(self._attachment_content(request.attachments))
+
         payload = {
             "model": self._model,
             "input": [
@@ -225,12 +256,7 @@ class OpenAICompatibleModelClient:
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": prompt,
-                        }
-                    ],
+                    "content": user_content,
                 },
             ],
         }
@@ -245,6 +271,78 @@ class OpenAICompatibleModelClient:
             if content:
                 return content
             raise RuntimeError(f"empty responses payload: {data}")
+
+    def _attachment_content(self, attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for attachment in attachments[:4]:
+            items.extend(self._single_attachment_content(attachment))
+        return items
+
+    def _single_attachment_content(self, attachment: dict[str, Any]) -> list[dict[str, Any]]:
+        path = self._attachment_path(attachment)
+        if path is None or not path.exists() or not path.is_file():
+            return []
+
+        content_type = str(attachment.get("content_type") or attachment.get("type") or "").lower()
+        if not content_type:
+            guessed_type, _ = mimetypes.guess_type(path.name)
+            content_type = guessed_type or "application/octet-stream"
+
+        if content_type.startswith("image/") and path.stat().st_size <= 8 * 1024 * 1024:
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            return [
+                {
+                    "type": "input_text",
+                    "text": f"附件：{attachment.get('filename') or path.name}，路径 {attachment.get('relative_path') or path.name}",
+                },
+                {
+                    "type": "input_image",
+                    "image_url": f"data:{content_type};base64,{encoded}",
+                },
+            ]
+
+        if self._is_text_attachment(path, content_type):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")[:12000]
+            except OSError:
+                return []
+            return [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"附件内容（{attachment.get('filename') or path.name} / {attachment.get('relative_path') or path.name}）:\n"
+                        f"{text}"
+                    ),
+                }
+            ]
+
+        return [
+            {
+                "type": "input_text",
+                "text": (
+                    f"附件元数据：{attachment.get('filename') or path.name}，路径 {attachment.get('relative_path') or path.name}，"
+                    f"类型 {content_type}，大小 {attachment.get('size') or path.stat().st_size} 字节。"
+                ),
+            }
+        ]
+
+    def _attachment_path(self, attachment: dict[str, Any]) -> Path | None:
+        candidate = attachment.get("absolute_path") or attachment.get("absolutePath")
+        if not candidate:
+            return None
+        try:
+            return Path(str(candidate))
+        except (TypeError, ValueError):
+            return None
+
+    def _is_text_attachment(self, path: Path, content_type: str) -> bool:
+        if content_type.startswith("text/"):
+            return True
+        return path.suffix.lower() in {
+            ".txt", ".md", ".json", ".csv", ".log", ".py", ".js", ".ts", ".tsx", ".jsx",
+            ".html", ".css", ".xml", ".yaml", ".yml", ".toml", ".ini", ".sh", ".ps1", ".bat",
+            ".c", ".cpp", ".h", ".hpp", ".java", ".go", ".rs",
+        }
 
     def _responses_endpoint(self) -> str:
         base = self._base_url.rstrip("/")
@@ -275,4 +373,11 @@ class OpenAICompatibleModelClient:
                 return "\n".join(part for part in parts if part)
 
         return ""
+
+
+def _model_api_disabled() -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return True
+
+    return os.getenv("OPENLONG_DISABLE_MODEL_API", "").strip().lower() in {"1", "true", "yes", "on"}
 

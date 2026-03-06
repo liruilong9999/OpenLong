@@ -7,9 +7,28 @@ from threading import Lock
 from typing import Any
 
 
-CONTEXT_FILES = ["USER.md", "SOUL.md", "IDENTITY.md", "RULES.md", "STYLE.md"]
-CONTEXT_PRIORITY = ["RULES.md", "IDENTITY.md", "SOUL.md", "STYLE.md", "USER.md"]
+CONTEXT_FILES = [
+    "AGENTS.md",
+    "USER.md",
+    "SOUL.md",
+    "IDENTITY.md",
+    "RULES.md",
+    "STYLE.md",
+    "TOOLS.md",
+    "BOOTSTRAP.md",
+]
+CONTEXT_PRIORITY = [
+    "BOOTSTRAP.md",
+    "RULES.md",
+    "IDENTITY.md",
+    "SOUL.md",
+    "TOOLS.md",
+    "STYLE.md",
+    "AGENTS.md",
+    "USER.md",
+]
 DYNAMIC_EDITABLE_CONTEXTS = {"USER.md", "STYLE.md"}
+OPTIONAL_CONTEXT_FILES = {"AGENTS.md", "TOOLS.md", "BOOTSTRAP.md"}
 
 
 def _utc_now() -> datetime:
@@ -216,10 +235,13 @@ class ContextManager:
         for filename in self._priority_order:
             section = sections.get(filename)
             if section is None:
-                blocks.append(f"## {filename}\n(empty)")
+                if filename not in OPTIONAL_CONTEXT_FILES:
+                    blocks.append(f"## {filename}\n(empty)")
                 continue
 
             content = section.body or section.raw or "(empty)"
+            if filename in OPTIONAL_CONTEXT_FILES and content == "(empty)":
+                continue
             blocks.append(f"## {filename}\n{content}")
 
         return "\n\n".join(blocks)

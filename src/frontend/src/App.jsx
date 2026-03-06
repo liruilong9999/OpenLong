@@ -1,116 +1,973 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
-import { checkHealth, createChatSocket } from "./api/client";
-import ChatPanel from "./components/ChatPanel";
-import AgentStatus from "./components/AgentStatus";
-import MemoryView from "./components/MemoryView";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  checkHealth,
+  createChatSocket,
+  createSession,
+  fetchAgentContext,
+  fetchMemoryDashboard,
+  fetchSessionHistory,
+  fetchSessions,
+  fetchSkillsDashboard,
+  fetchSystemDashboard,
+  sendChatMessage,
+  uploadSessionAttachments,
+} from "./api/client";
+
+
+const AGENT_ID = "main";
+const SESSION_TITLE_STORAGE_KEY = "openlong.session_titles";
+
+
+function loadStoredTitles() {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(SESSION_TITLE_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+
+function saveStoredTitles(value) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(SESSION_TITLE_STORAGE_KEY, JSON.stringify(value));
+}
+
+
+function sortSessions(items) {
+  return [...items].sort((left, right) => {
+    const leftTime = new Date(left.updated_at || left.created_at || 0).getTime();
+    const rightTime = new Date(right.updated_at || right.created_at || 0).getTime();
+    return rightTime - leftTime;
+  });
+}
+
+
+function previewText(text, maxLength = 28) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "未命名对话";
+  }
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength)}…`;
+}
+
+
+function formatTime(value) {
+  if (!value) {
+    return "刚刚";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "刚刚";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+
+function resolveHealthLabel(health) {
+  if (health.status === "ok") {
+    return "后端在线";
+  }
+  if (health.status === "unreachable") {
+    return "后端不可用";
+  }
+  if (health.status === "error") {
+    return "后端异常";
+  }
+  return "连接中";
+}
+
+
+function resolveSocketLabel(status) {
+  const mapping = {
+    idle: "未连接",
+    connected: "实时已连接",
+    closed: "实时已断开",
+    error: "实时连接失败",
+    connecting: "实时连接中",
+  };
+  return mapping[status] || status;
+}
+
+
+function contextBody(snapshot, filename) {
+  return snapshot?.files?.[filename]?.body || snapshot?.files?.[filename]?.raw || "暂无内容";
+}
+
+
+function eventToText(payload) {
+  const eventName = payload?.name || "event";
+  const body = payload?.payload || {};
+
+  if (eventName === "agent.execution.started") {
+    return "系统：正在分析你的请求…";
+  }
+  if (eventName === "tool.execution.completed") {
+    return `系统：工具 ${body.tool_name || "unknown"} 已执行完成`;
+  }
+  if (eventName === "tool.execution.denied") {
+    return `系统：工具 ${body.tool_name || "unknown"} 被拦截`;
+  }
+  if (eventName === "memory.write.completed") {
+    return "系统：记忆已更新";
+  }
+  if (eventName === "context.updated") {
+    return "系统：上下文已更新";
+  }
+  if (eventName === "skill.updated") {
+    return "系统：技能已更新";
+  }
+  return "";
+}
+
+
+const TEXT_ATTACHMENT_EXTENSIONS = new Set([
+  ".txt",
+  ".md",
+  ".json",
+  ".csv",
+  ".log",
+  ".py",
+  ".js",
+  ".ts",
+  ".tsx",
+  ".jsx",
+  ".html",
+  ".css",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".ini",
+  ".sh",
+  ".ps1",
+  ".bat",
+  ".c",
+  ".cpp",
+  ".h",
+  ".hpp",
+  ".java",
+  ".go",
+  ".rs",
+]);
+
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+
+function fileExtension(name) {
+  const index = String(name || "").lastIndexOf(".");
+  return index >= 0 ? String(name).slice(index).toLowerCase() : "";
+}
+
+
+function isTextLikeFile(file) {
+  const type = String(file?.type || "").toLowerCase();
+  if (type.startsWith("text/")) {
+    return true;
+  }
+  return TEXT_ATTACHMENT_EXTENSIONS.has(fileExtension(file?.name || ""));
+}
+
+
+function normalizeUploadedAttachment(item) {
+  const type = item.content_type || item.type || "application/octet-stream";
+  return {
+    id: item.relative_path || item.absolute_path || `${item.filename || item.saved_name}-${crypto.randomUUID()}`,
+    name: item.filename || item.saved_name || "upload.bin",
+    savedName: item.saved_name || item.filename || "upload.bin",
+    relativePath: item.relative_path || "",
+    absolutePath: item.absolute_path || "",
+    type,
+    size: Number(item.size || 0),
+    sizeLabel: formatFileSize(Number(item.size || 0)),
+    uploadedAt: item.uploaded_at || "",
+    category: String(type).split("/")[0] || "file",
+  };
+}
+
+
+function buildOutgoingMessage(text, attachments) {
+  const normalizedText = String(text || "").trim();
+  if (normalizedText) {
+    return normalizedText;
+  }
+  if (attachments.length) {
+    return "请结合我上传的附件进行分析。";
+  }
+  return "";
+}
+
+
+function buildDisplayMessage(text, attachments) {
+  const normalizedText = String(text || "").trim();
+  if (normalizedText) {
+    return normalizedText;
+  }
+  if (attachments.length === 1) {
+    return `上传了 1 个附件：${attachments[0].name}`;
+  }
+  return `上传了 ${attachments.length} 个附件`;
+}
+
 
 function App() {
-  const [sessionId, setSessionId] = useState("");
-  const [messages, setMessages] = useState([]);
   const [health, setHealth] = useState({ status: "checking" });
   const [socketStatus, setSocketStatus] = useState("idle");
+  const [sessions, setSessions] = useState([]);
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [searchText, setSearchText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [globalHint, setGlobalHint] = useState("");
+  const [sessionTitles, setSessionTitles] = useState(() => loadStoredTitles());
+  const [inspector, setInspector] = useState({
+    loading: true,
+    error: "",
+    context: null,
+    memory: null,
+    skills: null,
+    system: null,
+  });
+
   const socketRef = useRef(null);
+  const messagesRef = useRef(null);
 
   useEffect(() => {
-    checkHealth()
-      .then((payload) => setHealth(payload))
-      .catch(() => setHealth({ status: "unreachable" }));
+    saveStoredTitles(sessionTitles);
+  }, [sessionTitles]);
+
+  useEffect(() => {
+    const initialize = async () => {
+      await Promise.all([refreshHealth(), refreshSessions(true), refreshInspector()]);
+    };
+
+    initialize();
 
     return () => {
       socketRef.current?.close();
     };
   }, []);
 
-  const title = useMemo(() => {
-    return health.model ? `OpenLong Dashboard (${health.model})` : "OpenLong Dashboard";
-  }, [health]);
-
-  const appendMessage = (message) => {
-    setMessages((prev) => [...prev, message]);
-  };
-
-  const toEventMessage = (payload) => {
-    const eventName = payload?.name || "event";
-    const body = payload?.payload || {};
-
-    if (eventName === "agent.execution.started") {
-      return "agent: 正在处理请求...";
+  useEffect(() => {
+    if (!messagesRef.current) {
+      return;
     }
-    if (eventName === "tool.execution.completed") {
-      return `tool: ${body.tool_name || "unknown"} 执行完成`;
-    }
-    if (eventName === "tool.execution.denied") {
-      return `tool: ${body.tool_name || "unknown"} 被拦截`;
-    }
-    if (eventName === "memory.write.completed") {
-      return "memory: 已写入记忆";
-    }
-    return `${eventName}`;
-  };
+    messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+  }, [messages]);
 
-  const ensureSocket = async (nextSessionId) => {
-    if (socketRef.current && socketRef.current.sessionId === nextSessionId) {
-      return socketRef.current;
+  const selectedSession = useMemo(
+    () => sessions.find((item) => item.session_id === selectedSessionId) || null,
+    [sessions, selectedSessionId]
+  );
+
+  const filteredSessions = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+    if (!query) {
+      return sessions;
     }
 
+    return sessions.filter((item) => {
+      const title = sessionTitles[item.session_id] || "";
+      return item.session_id.toLowerCase().includes(query) || title.toLowerCase().includes(query);
+    });
+  }, [searchText, sessionTitles, sessions]);
+
+  const hasConversation = messages.some((item) => item.role === "user" || item.role === "assistant");
+
+  async function refreshHealth() {
+    try {
+      const payload = await checkHealth();
+      setHealth(payload);
+    } catch (error) {
+      setHealth({ status: "unreachable", error: error.message });
+    }
+  }
+
+  async function refreshInspector() {
+    try {
+      const [context, memory, skills, system] = await Promise.all([
+        fetchAgentContext(AGENT_ID),
+        fetchMemoryDashboard(AGENT_ID),
+        fetchSkillsDashboard(AGENT_ID),
+        fetchSystemDashboard(),
+      ]);
+
+      setInspector({
+        loading: false,
+        error: "",
+        context,
+        memory,
+        skills,
+        system,
+      });
+    } catch (error) {
+      setInspector((current) => ({
+        ...current,
+        loading: false,
+        error: error.message,
+      }));
+    }
+  }
+
+  async function refreshSessions(autoSelect = false) {
+    try {
+      const data = await fetchSessions();
+      const sorted = sortSessions(data);
+      setSessions(sorted);
+
+      if (autoSelect && !selectedSessionId && sorted.length > 0) {
+        await openSession(sorted[0].session_id);
+      }
+    } catch (error) {
+      setGlobalHint(`读取会话失败：${error.message}`);
+    }
+  }
+
+  async function ensureSocket(sessionId) {
+    if (!sessionId) {
+      return null;
+    }
+
+    if (socketRef.current && socketRef.current.sessionId === sessionId) {
+      try {
+        await socketRef.current.connect();
+        return socketRef.current;
+      } catch (error) {
+        setSocketStatus("error");
+        setGlobalHint(`实时连接失败：${error.message}`);
+        return null;
+      }
+    }
+
+    setSocketStatus("connecting");
     socketRef.current?.close();
-    const client = createChatSocket(nextSessionId, {
+    const client = createChatSocket(sessionId, {
       onStatus: (status) => setSocketStatus(status),
       onMessage: (payload) => {
-        if (payload.type === "chat.reply") {
-          appendMessage({ role: "assistant", content: payload.reply });
-          return;
-        }
-
         if (payload.type === "event") {
-          appendMessage({ role: "system", content: toEventMessage(payload) });
+          const text = eventToText(payload);
+          if (!text) {
+            return;
+          }
+          setMessages((current) => [
+            ...current,
+            {
+              role: "system",
+              content: text,
+              timestamp: payload.timestamp || new Date().toISOString(),
+            },
+          ]);
+          void refreshInspector();
           return;
         }
 
         if (payload.type === "error") {
-          appendMessage({ role: "system", content: `error: ${payload.error}` });
-          return;
+          setMessages((current) => [
+            ...current,
+            {
+              role: "system",
+              content: `系统：${payload.error}`,
+              timestamp: new Date().toISOString(),
+            },
+          ]);
         }
       },
     });
+
     socketRef.current = client;
-    await client.connect();
-    return client;
-  };
-
-  const onSend = async (text) => {
-    const nextSessionId = sessionId || crypto.randomUUID();
-    if (!sessionId) {
-      setSessionId(nextSessionId);
-    }
-
-    appendMessage({ role: "user", content: text });
 
     try {
-      const client = await ensureSocket(nextSessionId);
-      await client.sendChat(text);
+      await client.connect();
+      return client;
     } catch (error) {
-      appendMessage({ role: "system", content: `error: ${error.message}` });
+      setSocketStatus("error");
+      setGlobalHint(`实时连接失败：${error.message}`);
+      return null;
     }
+  }
+
+  async function openSession(sessionId) {
+    if (!sessionId) {
+      return;
+    }
+
+    setSelectedSessionId(sessionId);
+    setLoadingHistory(true);
+    setGlobalHint("");
+
+    try {
+      const history = await fetchSessionHistory(sessionId, 100);
+      setMessages(history.map((item) => ({
+        role: item.role,
+        content: item.content,
+        attachments: Array.isArray(item.attachments)
+          ? item.attachments.map((attachment) => normalizeUploadedAttachment(attachment))
+          : [],
+        timestamp: item.timestamp,
+      })));
+
+      const firstUserMessage = history.find((item) => item.role === "user")?.content;
+      if (firstUserMessage) {
+        setSessionTitles((current) => ({
+          ...current,
+          [sessionId]: current[sessionId] || previewText(firstUserMessage),
+        }));
+      }
+
+      await ensureSocket(sessionId);
+      await refreshInspector();
+    } catch (error) {
+      setMessages([]);
+      setGlobalHint(`加载会话失败：${error.message}`);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  async function createNewConversation() {
+    setGlobalHint("");
+
+    try {
+      const snapshot = await createSession(AGENT_ID);
+      const sessionId = snapshot.session_id;
+      setSelectedSessionId(sessionId);
+      setMessages([]);
+      setSessions((current) => sortSessions([snapshot, ...current.filter((item) => item.session_id !== sessionId)]));
+      await ensureSocket(sessionId);
+    } catch (error) {
+      setGlobalHint(`创建会话失败：${error.message}`);
+    }
+  }
+
+  async function ensureActiveSession() {
+    if (selectedSessionId) {
+      return selectedSessionId;
+    }
+
+    const snapshot = await createSession(AGENT_ID);
+    const sessionId = snapshot.session_id;
+    setSelectedSessionId(sessionId);
+    setSessions((current) => sortSessions([snapshot, ...current.filter((item) => item.session_id !== sessionId)]));
+    setMessages([]);
+    return sessionId;
+  }
+
+  async function uploadFilesForSession(files) {
+    const fileList = Array.from(files || []);
+    if (!fileList.length) {
+      return [];
+    }
+
+    const sessionId = await ensureActiveSession();
+    const payload = await uploadSessionAttachments({
+      sessionId,
+      files: fileList,
+      agentId: AGENT_ID,
+    });
+    await Promise.all([refreshSessions(false), refreshInspector()]);
+    return (payload.items || []).map((item) => normalizeUploadedAttachment(item));
+  }
+
+  async function handleSend(payload) {
+    const text = typeof payload === "string" ? payload : payload?.text || "";
+    const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
+    const outgoingMessage = buildOutgoingMessage(text, attachments);
+    const displayMessage = buildDisplayMessage(text, attachments);
+
+    let sessionId = selectedSessionId;
+
+    if (!sessionId) {
+      try {
+        sessionId = await ensureActiveSession();
+      } catch (error) {
+        setGlobalHint(`创建会话失败：${error.message}`);
+        return;
+      }
+    }
+
+    const firstUserTurn = !messages.some((item) => item.role === "user");
+    const now = new Date().toISOString();
+
+    setSending(true);
+    setGlobalHint("");
+    setMessages((current) => [
+      ...current,
+      {
+        role: "user",
+        content: displayMessage,
+        attachments,
+        timestamp: now,
+      },
+    ]);
+    setSessionTitles((current) => ({
+      ...current,
+      [sessionId]: current[sessionId] || previewText(displayMessage),
+    }));
+
+    await ensureSocket(sessionId);
+
+    try {
+      const result = await sendChatMessage({
+        sessionId,
+        message: outgoingMessage,
+        agentId: AGENT_ID,
+        attachments: attachments.map((item) => ({
+          filename: item.name,
+          saved_name: item.savedName,
+          relative_path: item.relativePath,
+          absolute_path: item.absolutePath,
+          content_type: item.type,
+          size: item.size,
+        })),
+      });
+
+      setMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          content: result.reply,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+
+      if (firstUserTurn) {
+        setSessionTitles((current) => ({
+          ...current,
+          [sessionId]: current[sessionId] || previewText(displayMessage),
+        }));
+      }
+
+      await Promise.all([refreshSessions(false), refreshInspector(), refreshHealth()]);
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        {
+          role: "system",
+          content: `系统：发送失败，${error.message}`,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar-shell">
+        <div className="sidebar-top">
+          <div className="brand-mark">OL</div>
+          <button className="primary-action" onClick={createNewConversation}>
+            ＋ 新对话
+          </button>
+        </div>
+
+        <div className="shortcut-list">
+          <button className="shortcut-item" onClick={() => refreshSessions(false)}>
+            <span className="shortcut-icon">⌕</span>
+            <span>刷新会话</span>
+          </button>
+          <div className="shortcut-item static">
+            <span className="shortcut-icon">🧠</span>
+            <span>记忆 {inspector.memory?.entries ?? 0}</span>
+          </div>
+          <div className="shortcut-item static">
+            <span className="shortcut-icon">🛠</span>
+            <span>技能 {inspector.skills?.count ?? 0}</span>
+          </div>
+          <div className="shortcut-item static">
+            <span className="shortcut-icon">⌂</span>
+            <span>工作区 {AGENT_ID}</span>
+          </div>
+        </div>
+
+        <div className="sidebar-search">
+          <span>⌕</span>
+          <input
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+            placeholder="搜索会话"
+          />
+        </div>
+
+        <div className="sidebar-title">你的对话</div>
+        <div className="conversation-list">
+          {filteredSessions.length === 0 && (
+            <div className="sidebar-empty">还没有会话，点击“新对话”开始。</div>
+          )}
+
+          {filteredSessions.map((item) => (
+            <button
+              key={item.session_id}
+              className={`conversation-item ${item.session_id === selectedSessionId ? "active" : ""}`}
+              onClick={() => openSession(item.session_id)}
+            >
+              <div className="conversation-item-title">
+                {sessionTitles[item.session_id] || `会话 ${item.session_id.slice(0, 8)}`}
+              </div>
+              <div className="conversation-item-meta">
+                <span>{formatTime(item.updated_at || item.created_at)}</span>
+                <span>{item.message_count || 0} 条</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <main className="workspace-shell">
+        <header className="workspace-topbar">
+          <div>
+            <div className="workspace-title">OpenLong</div>
+            <div className="workspace-subtitle">
+              {selectedSession ? (sessionTitles[selectedSession.session_id] || selectedSession.session_id) : "开始一段新的对话"}
+            </div>
+          </div>
+
+          <div className="status-group">
+            <span className={`status-pill ${health.status === "ok" ? "ok" : "warn"}`}>
+              {resolveHealthLabel(health)}
+            </span>
+            <span className={`status-pill ${socketStatus === "connected" ? "ok" : "neutral"}`}>
+              {resolveSocketLabel(socketStatus)}
+            </span>
+            <span className="status-pill neutral">模型 {health.model || "未加载"}</span>
+          </div>
+        </header>
+
+        <section className={`chat-stage ${hasConversation ? "with-history" : "empty"}`}>
+          {!hasConversation && !loadingHistory ? (
+            <div className="welcome-panel">
+              <div className="welcome-title">今天有什么计划？</div>
+              <div className="welcome-subtitle">你可以直接提问、写任务、让它调用工具，或者查看右侧的上下文信息。</div>
+            </div>
+          ) : (
+            <div className="message-scroll" ref={messagesRef}>
+              {loadingHistory && <div className="panel-hint">正在加载会话记录…</div>}
+
+              {messages.map((item, index) => (
+                <div key={`${item.role}-${index}-${item.timestamp || ""}`} className={`message-row ${item.role}`}>
+                  <div className={`message-bubble ${item.role}`}>
+                    <div className="message-role">
+                      {item.role === "user" ? "你" : item.role === "assistant" ? "OpenLong" : "系统"}
+                    </div>
+                    <div className="message-content">{item.content}</div>
+                    {!!item.attachments?.length && (
+                      <div className="message-attachments">
+                        {item.attachments.map((attachment) => (
+                          <div key={attachment.id} className="message-attachment-chip">
+                            <div className="message-attachment-name">{attachment.name}</div>
+                            <div className="message-attachment-meta">
+                              {attachment.type || "unknown"} · {attachment.sizeLabel}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="message-time">{formatTime(item.timestamp)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <ChatComposer
+            sending={sending}
+            onSend={handleSend}
+            onUploadFiles={uploadFilesForSession}
+            sessionId={selectedSessionId}
+          />
+          {globalHint && <div className="global-hint">{globalHint}</div>}
+        </section>
+      </main>
+
+      <aside className="inspector-shell">
+        <div className="inspector-header">
+          <div className="inspector-title">运行面板</div>
+          <div className="inspector-subtitle">基于当前后端接口实时读取</div>
+        </div>
+
+        <InspectorSection title="技能查看">
+          {inspector.loading && <div className="panel-hint">正在加载…</div>}
+          {inspector.error && <div className="panel-hint error">{inspector.error}</div>}
+          {!inspector.loading && !inspector.error && (
+            <>
+              <div className="metric-row">
+                <span>技能数</span>
+                <strong>{inspector.skills?.count ?? 0}</strong>
+              </div>
+              {(inspector.skills?.skills || []).slice(0, 4).map((skill) => (
+                <div key={skill.skill_id} className="mini-card">
+                  <div className="mini-card-title">{skill.name}</div>
+                  <div className="mini-card-text">{skill.description || "暂无说明"}</div>
+                  {!!skill.triggers?.length && <div className="mini-tags">触发词：{skill.triggers.join("、")}</div>}
+                </div>
+              ))}
+              {!(inspector.skills?.skills || []).length && <div className="panel-hint">当前还没有自定义技能。</div>}
+            </>
+          )}
+        </InspectorSection>
+
+        <InspectorSection title="记忆">
+          {inspector.loading && <div className="panel-hint">正在加载…</div>}
+          {!inspector.loading && inspector.memory && (
+            <>
+              <div className="metric-grid">
+                <div className="metric-box">
+                  <span>条目</span>
+                  <strong>{inspector.memory.entries}</strong>
+                </div>
+                <div className="metric-box">
+                  <span>平均权重</span>
+                  <strong>{inspector.memory.avg_weight}</strong>
+                </div>
+              </div>
+              <div className="mini-tags">类型：{Object.keys(inspector.memory.by_type || {}).join("、") || "暂无"}</div>
+              <div className="stack-list">
+                {(inspector.memory.recent_items || []).slice(0, 4).map((item) => (
+                  <div key={item.memory_id} className="mini-card">
+                    <div className="mini-card-title">{item.memory_type}</div>
+                    <div className="mini-card-text">{item.content}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </InspectorSection>
+
+        <InspectorSection title="用户（USER.md）">
+          <pre className="context-block">{contextBody(inspector.context, "USER.md")}</pre>
+        </InspectorSection>
+
+        <InspectorSection title="OpenLong（SOUL.md）">
+          <pre className="context-block">{contextBody(inspector.context, "SOUL.md")}</pre>
+        </InspectorSection>
+
+        <InspectorSection title="其它（运行信息）">
+          <div className="metric-row"><span>会话</span><strong>{sessions.length}</strong></div>
+          <div className="metric-row"><span>当前会话</span><strong>{selectedSessionId ? selectedSessionId.slice(0, 8) : "未选择"}</strong></div>
+          <div className="metric-row"><span>API Key</span><strong>{String(health.key_configured || false)}</strong></div>
+          <div className="metric-row"><span>任务队列</span><strong>{inspector.system?.task_queue?.total ?? 0}</strong></div>
+          <div className="mini-card">
+            <div className="mini-card-title">RULES.md</div>
+            <div className="mini-card-text">{previewText(contextBody(inspector.context, "RULES.md"), 90)}</div>
+          </div>
+          <div className="mini-card">
+            <div className="mini-card-title">STYLE.md</div>
+            <div className="mini-card-text">{previewText(contextBody(inspector.context, "STYLE.md"), 90)}</div>
+          </div>
+        </InspectorSection>
+      </aside>
+    </div>
+  );
+}
+
+
+function ChatComposer({ sending, onSend, onUploadFiles, sessionId }) {
+  const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState([]);
+  const [uploadHint, setUploadHint] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    setAttachments([]);
+    setUploadHint("");
+    setDragging(false);
+  }, [sessionId]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    const value = text.trim();
+    if ((!value && attachments.length === 0) || sending || uploading) {
+      return;
+    }
+
+    const currentAttachments = attachments;
+    setText("");
+    setAttachments([]);
+    setUploadHint("");
+    await onSend({ text: value, attachments: currentAttachments });
+  };
+
+  const onKeyDown = async (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      await submit(event);
+    }
+  };
+
+  const openFilePicker = () => {
+    fileInputRef.current?.click();
+  };
+
+  const uploadFiles = async (files) => {
+    const fileList = Array.from(files || []);
+    if (!fileList.length) {
+      return;
+    }
+
+    setUploading(true);
+    setUploadHint("正在上传附件…");
+    try {
+      const uploaded = await onUploadFiles(fileList);
+      setAttachments((current) => {
+        const existingIds = new Set(current.map((item) => item.id));
+        const next = [...current];
+        for (const item of uploaded) {
+          if (!existingIds.has(item.id)) {
+            next.push(item);
+          }
+        }
+        return next;
+      });
+      setUploadHint(
+        uploaded.length ? `已上传 ${uploaded.length} 个附件，发送时会把工作区路径一起发给后端。` : "未识别到可上传文件。"
+      );
+    } catch (error) {
+      setUploadHint(`上传失败：${error.message}`);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const onFilesSelected = async (event) => {
+    await uploadFiles(event.target.files || []);
+    event.target.value = "";
+  };
+
+  const onDragOver = (event) => {
+    event.preventDefault();
+    setDragging(true);
+  };
+
+  const onDragLeave = (event) => {
+    event.preventDefault();
+    const nextTarget = event.relatedTarget;
+    if (nextTarget && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setDragging(false);
+  };
+
+  const onDrop = async (event) => {
+    event.preventDefault();
+    setDragging(false);
+    await uploadFiles(event.dataTransfer?.files || []);
+  };
+
+  const removeAttachment = (attachmentId) => {
+    setAttachments((current) => current.filter((item) => item.id !== attachmentId));
   };
 
   return (
-    <main className="layout">
-      <header className="header">
-        <h1>{title}</h1>
-        <p>Realtime mode: websocket events and final replies are shown live.</p>
-      </header>
+    <form
+      className={`composer-form ${dragging ? "dragging" : ""}`}
+      onSubmit={submit}
+      onDragOver={onDragOver}
+      onDragEnter={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {!!attachments.length && (
+        <div className="attachment-list">
+          {attachments.map((attachment) => (
+            <div key={attachment.id} className="attachment-chip">
+              <div className="attachment-chip-main">
+                <div className="attachment-chip-title">{attachment.name}</div>
+                <div className="attachment-chip-meta">
+                  {attachment.type || "unknown"} · {attachment.sizeLabel}
+                </div>
+              </div>
+              <button
+                className="attachment-remove"
+                type="button"
+                onClick={() => removeAttachment(attachment.id)}
+                title="移除附件"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
-      <section className="panels">
-        <AgentStatus
-          health={{ ...health, status: health.status === "ok" ? `ok / ws:${socketStatus}` : health.status }}
-          sessionId={sessionId}
+      {!!uploadHint && <div className="upload-hint">{uploadHint}</div>}
+      {dragging && <div className="upload-drop-hint">松开以上传文件到当前会话</div>}
+
+      <div className="composer-shell">
+        <input
+          ref={fileInputRef}
+          type="file"
+          hidden
+          multiple
+          onChange={onFilesSelected}
+          accept="image/*,video/*,audio/*,.txt,.md,.json,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.xml,.yaml,.yml,.toml,.ini,.sh,.ps1,.bat,.c,.cpp,.h,.hpp,.java,.go,.rs,.pdf"
         />
-        <ChatPanel messages={messages} onSend={onSend} />
-        <MemoryView />
-      </section>
-    </main>
+        <button className="composer-side-button" type="button" title="上传文件" onClick={openFilePicker}>
+          ＋
+        </button>
+        <textarea
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="有问题，尽管问"
+          rows={1}
+        />
+        <button className="composer-send" type="submit" disabled={sending || uploading}>
+          {uploading ? "上传中" : sending ? "发送中" : "发送"}
+        </button>
+      </div>
+    </form>
   );
 }
+
+
+function InspectorSection({ title, children }) {
+  return (
+    <section className="inspector-section">
+      <div className="inspector-section-title">{title}</div>
+      <div className="inspector-section-body">{children}</div>
+    </section>
+  );
+}
+
 
 export default App;

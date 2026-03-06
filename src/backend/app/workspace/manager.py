@@ -1,8 +1,10 @@
 ﻿from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import shutil
 from typing import Any
 from uuid import uuid4
@@ -11,11 +13,15 @@ from app.context.manager import ContextManager
 
 
 CONTEXT_DEFAULTS = {
+    "AGENTS.md": "# AGENTS\nOpenLong workspace operating notes.\n- Stay inside the workspace.\n- Use tools only when needed.\n- Prefer concise Simplified Chinese replies unless the user asks otherwise.",
     "USER.md": "# USER\nDescribe user profile and preferences.",
     "SOUL.md": "# SOUL\nDescribe agent personality and behavior.",
     "IDENTITY.md": "# IDENTITY\nDescribe agent role and scope.",
     "RULES.md": "# RULES\nList non-negotiable rules.",
     "STYLE.md": "# STYLE\nDefine response style and format.",
+    "TOOLS.md": "# TOOLS\nRuntime will sync the available tools here.",
+    "HEARTBEAT.md": "# HEARTBEAT\nRuntime will sync the latest agent status here.",
+    "BOOTSTRAP.md": "# BOOTSTRAP\nOn the first successful turn, summarize the user intent into USER.md and then remove this file.",
     "MEMORY.md": "# MEMORY\nPersistent memory index for this agent.",
 }
 
@@ -24,9 +30,6 @@ WORKSPACE_DIRECTORIES = [
     "memory/logs",
     "memory/summaries",
     "logs",
-    "channels",
-    "self_evolution",
-    "backups",
 ]
 
 WORKSPACE_METADATA_FILE = "workspace.json"
@@ -34,6 +37,9 @@ WORKSPACE_STATE_FILE = "state.json"
 WORKSPACE_EVENT_LOG = "logs/events.jsonl"
 WORKSPACE_EXPORT_DIR = "_exports"
 WORKSPACE_TEMPLATE_DIR = "_templates"
+BOOTSTRAP_FILE = "BOOTSTRAP.md"
+UPLOADS_DIR = "uploads"
+_SAFE_UPLOAD_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 SKILL_LAYOUT_README = """# Skills Directory Layout
 
@@ -113,17 +119,29 @@ class WorkspaceManager:
         overwrite: bool = False,
     ) -> dict[str, Any]:
         workspace = self._workspace_path(agent_id)
+        existing_metadata = self._read_json(self._metadata_path(agent_id))
+        existing_state = self._read_json(self._state_path(agent_id))
         if overwrite and workspace.exists():
             shutil.rmtree(workspace)
             self._context_manager.invalidate(workspace)
+            existing_metadata = {}
+            existing_state = {}
 
         workspace.mkdir(parents=True, exist_ok=True)
         for relative_dir in WORKSPACE_DIRECTORIES:
             (workspace / relative_dir).mkdir(parents=True, exist_ok=True)
 
-        template = self._resolve_template(template_name)
+        resolved_template_name = str(existing_metadata.get("template_name") or template_name)
+        resolved_agent_type = str(
+            existing_state.get("agent_type")
+            or existing_metadata.get("agent_type")
+            or agent_type
+        )
+        template = self._resolve_template(resolved_template_name)
         files = dict(CONTEXT_DEFAULTS)
         files.update(template["files"])
+        if existing_metadata.get("bootstrap_status") == "completed":
+            files.pop(BOOTSTRAP_FILE, None)
 
         for filename, content in files.items():
             path = workspace / filename
@@ -134,28 +152,31 @@ class WorkspaceManager:
         if overwrite or not skill_readme.exists():
             skill_readme.write_text(SKILL_LAYOUT_README, encoding="utf-8")
 
-        metadata = self._read_json(self._metadata_path(agent_id))
-        created_at = metadata.get("created_at") if metadata and not overwrite else _utc_now().isoformat()
+        created_at = existing_metadata.get("created_at") if existing_metadata and not overwrite else _utc_now().isoformat()
         metadata = {
             "agent_id": agent_id,
-            "agent_type": agent_type,
-            "template_name": template_name,
+            "agent_type": resolved_agent_type,
+            "template_name": resolved_template_name,
             "created_at": created_at,
             "updated_at": _utc_now().isoformat(),
+            "bootstrap_status": existing_metadata.get("bootstrap_status", "pending") if not overwrite else "pending",
+            "bootstrap_completed_at": existing_metadata.get("bootstrap_completed_at") if not overwrite else None,
             "directories": list(WORKSPACE_DIRECTORIES),
             "files": sorted(files.keys()),
-            "version": 1,
+            "version": 2,
         }
+        if existing_metadata.get("bootstrap_notes") and not overwrite:
+            metadata["bootstrap_notes"] = existing_metadata["bootstrap_notes"]
         self._write_json(self._metadata_path(agent_id), metadata)
 
-        state = self._read_json(self._state_path(agent_id))
+        state = existing_state
         if overwrite or not state:
             state = {
                 "agent_id": agent_id,
-                "agent_type": agent_type,
+                "agent_type": resolved_agent_type,
                 "current_task": None,
                 "last_active_at": _utc_now().isoformat(),
-                "workspace_template": template_name,
+                "workspace_template": resolved_template_name,
             }
             self._write_json(self._state_path(agent_id), state)
 
@@ -186,6 +207,7 @@ class WorkspaceManager:
             "agent_id": agent_id,
             "exists": True,
             "path": str(workspace),
+            "bootstrap_pending": (workspace / BOOTSTRAP_FILE).exists(),
             "metadata": metadata,
             "state": state,
             "files": files,
@@ -301,6 +323,102 @@ class WorkspaceManager:
         self._touch_metadata(agent_id)
         return current
 
+    def has_workspace_file(self, agent_id: str, filename: str) -> bool:
+        workspace = self.ensure_agent_workspace(agent_id)
+        return (workspace / filename).exists()
+
+    def write_workspace_file(self, agent_id: str, filename: str, content: str) -> str:
+        workspace = self.ensure_agent_workspace(agent_id)
+        target = workspace / filename
+        normalized = content.rstrip()
+        target.write_text((normalized + "\n") if normalized else "", encoding="utf-8")
+        self._context_manager.invalidate(workspace)
+        self._touch_metadata(agent_id)
+        return str(target)
+
+    def store_session_upload(
+        self,
+        agent_id: str,
+        *,
+        session_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> dict[str, Any]:
+        workspace = self.ensure_agent_workspace(agent_id)
+        uploads_dir = workspace / UPLOADS_DIR / self._normalize_path_token(session_id)
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+
+        original_name = filename.strip() or "upload.bin"
+        normalized_name = self._safe_upload_name(original_name)
+        target = self._unique_upload_path(uploads_dir, normalized_name)
+        target.write_bytes(content)
+
+        relative_path = target.relative_to(workspace).as_posix()
+        stat = target.stat()
+        checksum = sha256(content).hexdigest()
+        self._touch_metadata(agent_id)
+        return {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "filename": original_name,
+            "saved_name": target.name,
+            "relative_path": relative_path,
+            "absolute_path": str(target),
+            "content_type": content_type or "application/octet-stream",
+            "size": stat.st_size,
+            "sha256": checksum,
+            "uploaded_at": _utc_now().isoformat(),
+        }
+
+    def list_session_uploads(self, agent_id: str, *, session_id: str) -> list[dict[str, Any]]:
+        workspace = self.ensure_agent_workspace(agent_id)
+        uploads_dir = workspace / UPLOADS_DIR / self._normalize_path_token(session_id)
+        if not uploads_dir.exists():
+            return []
+
+        items: list[dict[str, Any]] = []
+        for path in sorted(uploads_dir.iterdir(), key=lambda item: item.name):
+            if not path.is_file():
+                continue
+            stat = path.stat()
+            items.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "saved_name": path.name,
+                    "relative_path": path.relative_to(workspace).as_posix(),
+                    "absolute_path": str(path),
+                    "size": stat.st_size,
+                    "uploaded_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                }
+            )
+        return items
+
+    def delete_workspace_file(self, agent_id: str, filename: str) -> bool:
+        workspace = self.ensure_agent_workspace(agent_id)
+        target = workspace / filename
+        if not target.exists():
+            return False
+        target.unlink()
+        self._context_manager.invalidate(workspace)
+        self._touch_metadata(agent_id)
+        return True
+
+    def complete_bootstrap(self, agent_id: str, *, user_message: str, assistant_reply: str) -> bool:
+        if not self.delete_workspace_file(agent_id, BOOTSTRAP_FILE):
+            return False
+
+        metadata = self._read_json(self._metadata_path(agent_id))
+        metadata["bootstrap_status"] = "completed"
+        metadata["bootstrap_completed_at"] = _utc_now().isoformat()
+        metadata["bootstrap_notes"] = {
+            "first_user_message": user_message[:400],
+            "first_assistant_reply": assistant_reply[:400],
+        }
+        self._write_json(self._metadata_path(agent_id), metadata)
+        return True
+
     def load_agent_state(self, agent_id: str) -> dict[str, Any]:
         self.ensure_agent_workspace(agent_id)
         return self._read_json(self._state_path(agent_id))
@@ -347,6 +465,36 @@ class WorkspaceManager:
 
     def _workspace_path(self, agent_id: str) -> Path:
         return self._workspace_root / agent_id
+
+    def _safe_upload_name(self, filename: str) -> str:
+        base = Path(filename).name.strip() or "upload.bin"
+        if "." in base:
+            stem = Path(base).stem
+            suffix = Path(base).suffix[:16]
+        else:
+            stem = base
+            suffix = ""
+
+        safe_stem = _SAFE_UPLOAD_NAME.sub("_", stem).strip("._") or "upload"
+        return f"{safe_stem[:80]}{suffix}"
+
+    def _unique_upload_path(self, parent: Path, filename: str) -> Path:
+        candidate = parent / filename
+        if not candidate.exists():
+            return candidate
+
+        stem = candidate.stem
+        suffix = candidate.suffix
+        for index in range(1, 1000):
+            next_candidate = parent / f"{stem}_{index}{suffix}"
+            if not next_candidate.exists():
+                return next_candidate
+
+        return parent / f"{stem}_{uuid4().hex[:8]}{suffix}"
+
+    def _normalize_path_token(self, value: str) -> str:
+        normalized = _SAFE_UPLOAD_NAME.sub("_", value.strip()).strip("._")
+        return normalized or "default"
 
     def _metadata_path(self, agent_id: str) -> Path:
         return self._workspace_path(agent_id) / WORKSPACE_METADATA_FILE

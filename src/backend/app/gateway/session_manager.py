@@ -96,6 +96,7 @@ class SessionManager:
                     "role": item.role.value,
                     "content": item.content,
                     "timestamp": item.timestamp.isoformat(),
+                    "attachments": item.attachments,
                 }
                 for item in session.messages[-limit:]
             ]

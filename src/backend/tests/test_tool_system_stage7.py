@@ -44,6 +44,19 @@ def test_tool_registry_and_specs(tmp_path: Path) -> None:
     )
 
 
+def test_tool_permission_profile_resolution() -> None:
+    manager = ToolPermissionManager.from_settings(
+        profile="minimal",
+        available_tools=["file", "http", "shell", "time", "workspace"],
+        allowlist_csv="file",
+        confirmation_csv="shell",
+    )
+
+    assert manager.profile == "minimal"
+    assert manager.allowlist == {"workspace", "time", "file"}
+    assert manager.requires_confirmation("shell") is True
+
+
 def test_tool_executor_permissions_and_sandbox(tmp_path: Path) -> None:
     import asyncio
 
@@ -85,6 +98,7 @@ def test_tool_debug_api_and_logs() -> None:
     tools_payload = tools_resp.json()
     assert tools_payload["count"] >= 5
     assert "permissions" in tools_payload
+    assert "profile" in tools_payload["permissions"]
 
     write_resp = client.post(
         "/tools/debug/execute",

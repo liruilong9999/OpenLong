@@ -3,7 +3,7 @@
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 
@@ -11,6 +11,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str | None = None
     agent_id: str | None = None
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -106,6 +107,7 @@ def build_api_router() -> APIRouter:
             user_message=body.message,
             preferred_agent_id=body.agent_id,
             source="api",
+            attachments=body.attachments,
         )
         return ChatResponse(**result)
 
@@ -155,8 +157,50 @@ def build_api_router() -> APIRouter:
         return snapshot
 
     @router.get("/sessions/{session_id}/history")
-    async def get_session_history(session_id: str, request: Request, limit: int = 100) -> list[dict[str, str]]:
+    async def get_session_history(session_id: str, request: Request, limit: int = 100) -> list[dict[str, Any]]:
         return request.app.state.runtime.session_manager.get_history(session_id=session_id, limit=limit)
+
+    @router.get("/sessions/{session_id}/attachments")
+    async def list_session_attachments(
+        session_id: str,
+        request: Request,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        return request.app.state.runtime.list_session_uploads(session_id=session_id, agent_id=agent_id)
+
+    @router.post("/sessions/{session_id}/attachments")
+    async def upload_session_attachments(
+        session_id: str,
+        request: Request,
+        files: list[UploadFile] = File(...),
+        agent_id: str | None = Form(default=None),
+    ) -> dict[str, Any]:
+        if not files:
+            raise HTTPException(status_code=400, detail="no files uploaded")
+
+        items: list[dict[str, Any]] = []
+        for upload in files:
+            content = await upload.read()
+            if not content:
+                continue
+            items.append(
+                request.app.state.runtime.store_session_upload(
+                    session_id=session_id,
+                    filename=upload.filename or "upload.bin",
+                    content=content,
+                    content_type=upload.content_type or "application/octet-stream",
+                    preferred_agent_id=agent_id,
+                )
+            )
+
+        if not items:
+            raise HTTPException(status_code=400, detail="all uploaded files were empty")
+
+        return {
+            "session_id": session_id,
+            "agent_id": items[0]["agent_id"],
+            "items": items,
+        }
 
     @router.post("/sessions/{session_id}/assign-agent")
     async def assign_agent(session_id: str, body: SessionAssignRequest, request: Request) -> dict[str, Any]:

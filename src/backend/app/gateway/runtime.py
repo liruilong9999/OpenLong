@@ -64,7 +64,9 @@ class GatewayRuntime:
         tool_registry.register(ShellTool(enabled=settings.tool_shell_enabled))
         tool_registry.register(TimeTool())
         tool_registry.register(WorkspaceTool(workspace_manager))
-        tool_permission_manager = ToolPermissionManager.from_csv(
+        tool_permission_manager = ToolPermissionManager.from_settings(
+            profile=settings.tool_profile,
+            available_tools=tool_registry.list_tools(),
             allowlist_csv=settings.tool_allowlist,
             denylist_csv=settings.tool_denylist,
             confirmation_csv=settings.tool_confirmation_required,
@@ -104,6 +106,7 @@ class GatewayRuntime:
             agent_runtime=agent_runtime,
         )
         runtime._register_event_handlers()
+        runtime._sync_workspace_runtime_docs("main")
         return runtime
 
     def _register_event_handlers(self) -> None:
@@ -115,6 +118,7 @@ class GatewayRuntime:
             "workspace.deleted",
             "workspace.exported",
             "workspace.imported",
+            "workspace.file_uploaded",
             "context.updated",
             "context.reloaded",
             "skill.reloaded",
@@ -211,6 +215,7 @@ class GatewayRuntime:
             overwrite=overwrite,
         )
         self.agent_runtime.get_or_create(agent_id, agent_type=agent_type)
+        self._sync_workspace_runtime_docs(agent_id)
         self.event_bus.emit(
             "workspace.created",
             {"agent_id": agent_id, "template_name": template_name},
@@ -240,6 +245,7 @@ class GatewayRuntime:
             overwrite=overwrite,
         )
         self.agent_runtime.get_or_create(agent_id)
+        self._sync_workspace_runtime_docs(agent_id)
         self.event_bus.emit(
             "workspace.imported",
             {"agent_id": agent_id, "archive_path": archive_path},
@@ -251,6 +257,53 @@ class GatewayRuntime:
             "agent_id": agent_id,
             "items": self.workspace_manager.recent_logs(agent_id=agent_id, limit=limit),
         }
+
+    def list_session_uploads(self, session_id: str, agent_id: str | None = None) -> dict[str, Any]:
+        session = self.session_manager.get(session_id)
+        resolved_agent_id = agent_id or (session.agent_id if session is not None else "main")
+        self.agent_manager.ensure_agent(resolved_agent_id)
+        return {
+            "session_id": session_id,
+            "agent_id": resolved_agent_id,
+            "items": self.workspace_manager.list_session_uploads(
+                resolved_agent_id,
+                session_id=session_id,
+            ),
+        }
+
+    def store_session_upload(
+        self,
+        *,
+        session_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+        preferred_agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        session_snapshot = self.create_session(
+            session_id=session_id,
+            preferred_agent_id=preferred_agent_id,
+        )
+        agent_id = str(session_snapshot.get("agent_id") or preferred_agent_id or "main")
+        item = self.workspace_manager.store_session_upload(
+            agent_id,
+            session_id=session_id,
+            filename=filename,
+            content=content,
+            content_type=content_type,
+        )
+        self.event_bus.emit(
+            "workspace.file_uploaded",
+            {
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "filename": item["filename"],
+                "relative_path": item["relative_path"],
+                "size": item["size"],
+            },
+        )
+        return item
+
     def create_session(
         self,
         session_id: str | None = None,
@@ -436,6 +489,7 @@ class GatewayRuntime:
         user_message: str,
         preferred_agent_id: str | None = None,
         source: str = "api",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, str]:
         if not self.session_manager.get(session_id):
             self.create_session(session_id=session_id, preferred_agent_id=preferred_agent_id)
@@ -458,9 +512,17 @@ class GatewayRuntime:
                 "agent_id": session.agent_id,
                 "source": source,
                 "message_size": len(user_message),
+                "attachments": len(attachments or []),
             },
         )
-        self.session_manager.append_message(session_id, ChatMessage(role=Role.USER, content=user_message))
+        self.session_manager.append_message(
+            session_id,
+            ChatMessage(
+                role=Role.USER,
+                content=self._history_user_content(user_message, attachments or []),
+                attachments=list(attachments or []),
+            ),
+        )
 
         await self.model_router.dispatch(
             agent_id=session.agent_id,
@@ -479,6 +541,7 @@ class GatewayRuntime:
                     agent_id=session.agent_id,
                     session_id=session_id,
                     user_message=user_message,
+                    attachments=attachments,
                     history=session.messages,
                 )
             except Exception as exc:
@@ -515,6 +578,12 @@ class GatewayRuntime:
             session_id,
             ChatMessage(role=Role.ASSISTANT, content=turn_result.reply),
         )
+        self._complete_bootstrap_if_needed(
+            agent_id=session.agent_id,
+            user_message=user_message,
+            assistant_reply=turn_result.reply,
+        )
+        self._sync_workspace_runtime_docs(session.agent_id)
 
         return {
             "session_id": session_id,
@@ -522,6 +591,159 @@ class GatewayRuntime:
             "reply": turn_result.reply,
             "task_id": task_id,
         }
+
+    def _history_user_content(self, user_message: str, attachments: list[dict[str, Any]]) -> str:
+        base = user_message.strip()
+        if not attachments:
+            return base
+
+        attachment_names = ", ".join(
+            str(item.get("filename") or item.get("saved_name") or item.get("relative_path") or "attachment")
+            for item in attachments[:6]
+        )
+        if base:
+            return f"{base}\n[attachments] {attachment_names}"
+        return f"[attachments] {attachment_names}"
+
+    def _complete_bootstrap_if_needed(
+        self,
+        *,
+        agent_id: str,
+        user_message: str,
+        assistant_reply: str,
+    ) -> None:
+        if not self.workspace_manager.has_workspace_file(agent_id, "BOOTSTRAP.md"):
+            return
+
+        snapshot = self.workspace_manager.get_context_snapshot(agent_id)
+        user_body = str(snapshot["files"].get("USER.md", {}).get("body", "")).strip()
+        style_body = str(snapshot["files"].get("STYLE.md", {}).get("body", "")).strip()
+
+        if not user_body or user_body == "Describe user profile and preferences.":
+            self.workspace_manager.write_workspace_file(
+                agent_id,
+                "USER.md",
+                self._render_bootstrap_user_profile(user_message),
+            )
+
+        if not style_body or style_body == "Define response style and format.":
+            self.workspace_manager.write_workspace_file(
+                agent_id,
+                "STYLE.md",
+                self._render_bootstrap_style(user_message),
+            )
+
+        self.workspace_manager.complete_bootstrap(
+            agent_id,
+            user_message=user_message,
+            assistant_reply=assistant_reply,
+        )
+
+    def _render_bootstrap_user_profile(self, user_message: str) -> str:
+        lines = [
+            "# USER",
+            "## First Intent",
+            f"- 首次需求：{user_message[:300]}",
+        ]
+        if any(token in user_message for token in ["Python", "python"]):
+            lines.append("- 兴趣偏好：提到 Python 相关任务")
+        if any(token in user_message for token in ["简洁", "简短", "直接"]):
+            lines.append("- 回复偏好：偏好简洁直接")
+        if any(token in user_message for token in ["中文", "汉语"]):
+            lines.append("- 语言偏好：中文")
+        return "\n".join(lines)
+
+    def _render_bootstrap_style(self, user_message: str) -> str:
+        rules = [
+            "# STYLE",
+            "- 默认使用简体中文回答。",
+            "- 优先给出结论，再补充关键细节。",
+            "- 保持简洁，必要时再展开。",
+        ]
+        if any(token in user_message for token in ["详细", "展开"]):
+            rules.append("- 当前用户允许在需要时展开说明。")
+        return "\n".join(rules)
+
+    def _sync_workspace_runtime_docs(self, agent_id: str) -> None:
+        self.workspace_manager.write_workspace_file(agent_id, "AGENTS.md", self._render_agents_guide(agent_id))
+        self.workspace_manager.write_workspace_file(agent_id, "TOOLS.md", self._render_tools_guide(agent_id))
+        self.workspace_manager.write_workspace_file(agent_id, "HEARTBEAT.md", self._render_heartbeat(agent_id))
+
+    def _render_agents_guide(self, agent_id: str) -> str:
+        endpoint = self.model_router.endpoint_for(agent_id, task_type="chat")
+        workspace = self.workspace_manager.load_workspace(agent_id)
+        metadata = workspace.get("metadata", {})
+        return "\n".join(
+            [
+                "# AGENTS",
+                f"- agent_id: {agent_id}",
+                f"- agent_type: {metadata.get('agent_type', 'general')}",
+                f"- template: {metadata.get('template_name', 'default')}",
+                f"- model: {endpoint.provider}/{endpoint.model}",
+                "- 优先在工作区内完成任务，再调用外部能力。",
+                "- 工具调用后要总结结果，不要只回传原始输出。",
+                "- 除非用户明确要求，默认使用简体中文并保持简洁。",
+            ]
+        )
+
+    def _render_tools_guide(self, agent_id: str) -> str:
+        del agent_id
+        permission = self.tool_executor.permission_snapshot()
+        allowed = set(permission["allowlist"])
+        confirmation_required = set(permission["confirmation_required"])
+
+        lines = [
+            "# TOOLS",
+            f"- profile: {permission['profile']}",
+            f"- shell_enabled: {str(self.settings.tool_shell_enabled).lower()}",
+            f"- confirmation_required: {', '.join(sorted(confirmation_required)) if confirmation_required else 'none'}",
+            "",
+            "## Enabled Tools",
+        ]
+
+        blocked: list[str] = []
+        for spec in self.tool_registry.list_specs():
+            if spec.name not in allowed:
+                blocked.append(spec.name)
+                continue
+
+            param_names = ", ".join(param.name for param in spec.parameters) or "none"
+            suffix = " (requires confirmation)" if spec.name in confirmation_required else ""
+            if spec.name == "shell" and not self.settings.tool_shell_enabled:
+                suffix = f"{suffix} (runtime disabled)"
+            lines.append(f"- {spec.name}: {spec.description} | params: {param_names}{suffix}")
+
+        if blocked:
+            lines.extend(["", "## Blocked Tools"])
+            for name in blocked:
+                lines.append(f"- {name}")
+
+        return "\n".join(lines)
+
+    def _render_heartbeat(self, agent_id: str) -> str:
+        endpoint = self.model_router.endpoint_for(agent_id, task_type="chat")
+        memory = self.memory_manager.status(agent_id)
+        workspace = self.workspace_manager.load_workspace(agent_id)
+        sessions = [item for item in self.session_manager.list_sessions(include_closed=True) if item["agent_id"] == agent_id]
+        active_sessions = sum(1 for item in sessions if item["status"] == "active")
+        bootstrap_status = "pending" if workspace.get("bootstrap_pending") else "completed"
+        permission = self.tool_executor.permission_snapshot()
+
+        return "\n".join(
+            [
+                "# HEARTBEAT",
+                f"- updated_at: {self.event_bus.recent(limit=1)[0]['timestamp'] if self.event_bus.recent(limit=1) else ''}",
+                f"- agent_id: {agent_id}",
+                f"- workspace: {workspace.get('path', '')}",
+                f"- bootstrap: {bootstrap_status}",
+                f"- model: {endpoint.provider}/{endpoint.model}",
+                f"- tool_profile: {permission['profile']}",
+                f"- sessions_total: {len(sessions)}",
+                f"- sessions_active: {active_sessions}",
+                f"- memory_entries: {memory.get('entries', 0)}",
+                f"- memory_types: {memory.get('by_type', {})}",
+            ]
+        )
 
     async def execute_tool_task(
         self,

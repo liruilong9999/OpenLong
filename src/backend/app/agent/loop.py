@@ -53,6 +53,7 @@ class AgentLoop:
         agent: Agent,
         session_id: str,
         user_message: str,
+        attachments: list[dict[str, object]] | None,
         history: list[ChatMessage],
         context_block: str,
         memories: list[str],
@@ -73,6 +74,7 @@ class AgentLoop:
                 skills=skills,
                 matched_skills=matched_skills,
                 user_message=user_message,
+                attachments=attachments or [],
                 scratchpad="\n".join(scratchpad_lines),
             )
 
@@ -84,6 +86,7 @@ class AgentLoop:
                     prompt=prompt_bundle.full_prompt,
                     iteration=iteration,
                     tool_summaries=[trace.content[:240] for trace in tool_traces],
+                    attachments=list(attachments or []),
                 )
             )
             model_outputs.append(model_output)

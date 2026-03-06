@@ -121,6 +121,7 @@ class AgentRuntime:
         session_id: str,
         user_message: str,
         history: list[ChatMessage],
+        attachments: list[dict[str, Any]] | None = None,
     ) -> AgentTurnResult:
         agent = self.get_or_create(agent_id)
         skills, matched_skills = self._resolve_skills(agent_id, user_message)
@@ -140,6 +141,7 @@ class AgentRuntime:
                 agent=agent,
                 session_id=session_id,
                 user_message=user_message,
+                attachments=attachments,
                 history=history,
                 context_block=context_block,
                 memories=memories,

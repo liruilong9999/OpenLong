@@ -12,6 +12,7 @@ class PromptBundle:
     memory_block: str
     skill_block: str
     history_block: str
+    attachment_block: str
     scratchpad_block: str
     user_block: str
     full_prompt: str
@@ -26,6 +27,7 @@ class PromptBuilder:
         skills: list[SkillSpec],
         matched_skills: list[SkillSpec],
         user_message: str,
+        attachments: list[dict[str, object]] | None = None,
         scratchpad: str = "",
     ) -> PromptBundle:
         history_text = "\n".join(msg.to_prompt_line() for msg in history[-16:])
@@ -39,6 +41,7 @@ class PromptBuilder:
         available_section = available_skills or "- none"
         matched_section = matched_skill_block or "- none"
         history_section = history_text or "- none"
+        attachment_section = self._attachment_text(attachments or [])
         scratchpad_section = scratchpad or "- none"
         user_section = user_message
 
@@ -51,6 +54,7 @@ class PromptBuilder:
             f"[MATCHED_SKILLS]\n{matched_section}\n\n"
             f"[AVAILABLE_SKILLS]\n{available_section}\n\n"
             f"[HISTORY]\n{history_section}\n\n"
+            f"[ATTACHMENTS]\n{attachment_section}\n\n"
             f"[SCRATCHPAD]\n{scratchpad_section}\n\n"
             f"[USER]\n{user_section}"
         )
@@ -60,7 +64,21 @@ class PromptBuilder:
             memory_block=memory_section,
             skill_block=available_section,
             history_block=history_section,
+            attachment_block=attachment_section,
             scratchpad_block=scratchpad_section,
             user_block=user_section,
             full_prompt=full_prompt,
         )
+
+    def _attachment_text(self, attachments: list[dict[str, object]]) -> str:
+        if not attachments:
+            return "- none"
+
+        lines: list[str] = []
+        for item in attachments[:8]:
+            lines.append(
+                f"- filename={item.get('filename') or item.get('saved_name')} "
+                f"path={item.get('relative_path')} type={item.get('content_type') or item.get('type')} "
+                f"size={item.get('size')}"
+            )
+        return "\n".join(lines)

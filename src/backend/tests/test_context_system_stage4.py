@@ -13,7 +13,19 @@ def test_context_priority_cache_and_dynamic_update(tmp_path: Path) -> None:
 
     first = workspace_manager.get_context_snapshot(agent_id)
     assert first["cache_hit"] is False
-    assert first["priority_order"] == ["RULES.md", "IDENTITY.md", "SOUL.md", "STYLE.md", "USER.md"]
+    assert first["priority_order"] == [
+        "BOOTSTRAP.md",
+        "RULES.md",
+        "IDENTITY.md",
+        "SOUL.md",
+        "TOOLS.md",
+        "STYLE.md",
+        "AGENTS.md",
+        "USER.md",
+    ]
+    assert "AGENTS.md" in first["files"]
+    assert "TOOLS.md" in first["files"]
+    assert "BOOTSTRAP.md" in first["files"]
 
     second = workspace_manager.get_context_snapshot(agent_id)
     assert second["cache_hit"] is True
@@ -35,10 +47,13 @@ def test_context_priority_cache_and_dynamic_update(tmp_path: Path) -> None:
     assert "尽量简短" in updated_style["files"]["STYLE.md"]["body"]
 
     prompt_block = updated_style["prompt_block"]
+    assert prompt_block.index("## BOOTSTRAP.md") < prompt_block.index("## RULES.md")
     assert prompt_block.index("## RULES.md") < prompt_block.index("## IDENTITY.md")
     assert prompt_block.index("## IDENTITY.md") < prompt_block.index("## SOUL.md")
-    assert prompt_block.index("## SOUL.md") < prompt_block.index("## STYLE.md")
-    assert prompt_block.index("## STYLE.md") < prompt_block.index("## USER.md")
+    assert prompt_block.index("## SOUL.md") < prompt_block.index("## TOOLS.md")
+    assert prompt_block.index("## TOOLS.md") < prompt_block.index("## STYLE.md")
+    assert prompt_block.index("## STYLE.md") < prompt_block.index("## AGENTS.md")
+    assert prompt_block.index("## AGENTS.md") < prompt_block.index("## USER.md")
 
     with pytest.raises(PermissionError):
         workspace_manager.update_context(
@@ -69,7 +84,7 @@ def test_context_api_update_and_reload() -> None:
     base_context = client.get("/agents/main/context")
     assert base_context.status_code == 200
     base_payload = base_context.json()
-    assert base_payload["priority_order"][0] == "RULES.md"
+    assert base_payload["priority_order"][0] == "BOOTSTRAP.md"
 
     update_user = client.put(
         "/agents/main/context/USER",
