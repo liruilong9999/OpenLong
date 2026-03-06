@@ -61,7 +61,13 @@ class GatewayRuntime:
         tool_registry = ToolRegistry()
         tool_registry.register(FileTool(workspace_manager))
         tool_registry.register(HttpTool())
-        tool_registry.register(ShellTool(enabled=settings.tool_shell_enabled))
+        tool_registry.register(
+            ShellTool(
+                enabled=settings.tool_shell_enabled,
+                project_root=workspace_manager.project_root,
+                workspace_root=workspace_manager.workspace_root,
+            )
+        )
         tool_registry.register(TimeTool())
         tool_registry.register(WorkspaceTool(workspace_manager))
         tool_permission_manager = ToolPermissionManager.from_settings(
@@ -145,6 +151,10 @@ class GatewayRuntime:
             "model.call.completed",
             "tool.execution.completed",
             "tool.execution.denied",
+            "tool.execution.stream",
+            "tool.approval.created",
+            "tool.approval.approved",
+            "tool.approval.rejected",
             "memory.write.completed",
             "memory.summary.updated",
             "memory.compressed",
@@ -843,6 +853,15 @@ class GatewayRuntime:
             "items": self.tool_executor.recent_logs(limit=limit, tool_name=tool_name),
         }
 
+    def tool_approvals(self, limit: int = 20) -> dict[str, Any]:
+        return self.tool_executor.approval_snapshot(limit=limit)
+
+    async def approve_tool_approval(self, approval_id: str) -> dict[str, Any] | None:
+        return await self.tool_executor.approve(approval_id)
+
+    def reject_tool_approval(self, approval_id: str, reason: str = "manual reject") -> dict[str, Any] | None:
+        return self.tool_executor.reject(approval_id, reason=reason)
+
     async def execute_memory_task(
         self,
         *,
@@ -935,6 +954,7 @@ class GatewayRuntime:
         return {
             "registry": self.list_tools(),
             "logs": self.tool_logs(limit=limit, tool_name=tool_name),
+            "approvals": self.tool_approvals(limit=20),
         }
 
     def dashboard_skills(self, agent_id: str, force_refresh: bool = False) -> dict[str, Any]:
@@ -953,6 +973,8 @@ class GatewayRuntime:
             "context_cache": self.workspace_manager.context_cache_stats(),
             "skill_cache": self.skill_loader.cache_stats(),
             "tool_logs": self.tool_executor.log_stats(),
+            "tool_approvals": self.tool_executor.approval_snapshot(limit=10),
+            "shell_logs": self.tool_logs(limit=10, tool_name="shell"),
             "workspaces": {
                 "total": len(self.workspace_manager.list_workspaces()),
                 "templates": len(self.workspace_manager.list_templates()["templates"]),

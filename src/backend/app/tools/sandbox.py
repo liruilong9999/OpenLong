@@ -5,36 +5,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from app.tools.builtins.shell_tool import allowed_shell_prefixes, classify_shell_command
 
-_BLOCKED_SHELL_PATTERNS = [
-    "rm -rf",
-    "del /f /q",
-    "format ",
-    "mkfs",
-    "shutdown",
-    "reboot",
-    "reg delete",
-    "net user",
-    "curl ",
-    "| sh",
-    "| bash",
-    "powershell -enc",
-]
 
-_ALLOWED_SHELL_PREFIXES = [
-    "echo",
-    "dir",
-    "ls",
-    "pwd",
-    "type",
-    "cat",
-    "get-childitem",
-    "get-location",
-    "where",
-    "python --version",
-    "pip --version",
-    "git status",
-]
+_ALLOWED_SHELL_PREFIXES = allowed_shell_prefixes()
 
 
 class ToolSandbox:
@@ -62,15 +36,26 @@ class ToolSandbox:
             return False, "command too long", payload
 
         lowered = command.lower()
-        for pattern in _BLOCKED_SHELL_PATTERNS:
-            if pattern in lowered:
-                return False, f"dangerous shell pattern blocked: {pattern}", payload
+        category = classify_shell_command(command)
+        if category == "high_risk":
+            return False, "dangerous shell command blocked", payload
 
         if not any(lowered.startswith(prefix) for prefix in _ALLOWED_SHELL_PREFIXES):
             return False, "shell command not allowed by sandbox prefix policy", payload
 
-        timeout = float(payload.get("timeout", 15.0))
-        payload["timeout"] = max(1.0, min(timeout, 30.0))
+        timeout = float(payload.get("timeout", 120.0))
+        payload["timeout"] = max(1.0, min(timeout, 600.0))
+        payload["command_category"] = category
+
+        cwd = str(payload.get("cwd", "") or "").strip()
+        if cwd:
+            raw = Path(cwd)
+            if not raw.is_absolute() and ".." in raw.parts:
+                return False, "shell cwd traversal is blocked", payload
+
+        scope = str(payload.get("cwd_scope", "project") or "project").strip().lower()
+        if scope not in {"auto", "project", "workspace"}:
+            return False, "unsupported shell cwd scope", payload
         return True, None, payload
 
     def _validate_http(self, payload: dict[str, Any]) -> tuple[bool, str | None, dict[str, Any]]:

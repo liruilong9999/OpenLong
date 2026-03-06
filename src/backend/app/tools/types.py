@@ -74,6 +74,7 @@ class ToolExecutionRecord:
     success: bool
     latency_ms: float
     result_preview: str
+    result_data: dict[str, Any] = field(default_factory=dict)
     denied_reason: str | None = None
 
     @classmethod
@@ -88,6 +89,7 @@ class ToolExecutionRecord:
         success: bool,
         latency_ms: float,
         result_preview: str,
+        result_data: dict[str, Any] | None = None,
         denied_reason: str | None = None,
     ) -> "ToolExecutionRecord":
         return cls(
@@ -101,6 +103,7 @@ class ToolExecutionRecord:
             success=success,
             latency_ms=latency_ms,
             result_preview=result_preview,
+            result_data=dict(result_data or {}),
             denied_reason=denied_reason,
         )
 
@@ -116,6 +119,7 @@ class ToolExecutionRecord:
             "success": self.success,
             "latency_ms": self.latency_ms,
             "result_preview": self.result_preview,
+            "result_data": self.result_data,
             "denied_reason": self.denied_reason,
         }
 

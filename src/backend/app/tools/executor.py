@@ -4,6 +4,8 @@ from time import perf_counter
 from typing import Any
 
 from app.core.events import EventBus
+from app.tools.approvals import ToolApprovalStatus, ToolApprovalStore
+from app.tools.builtins.shell_tool import classify_shell_command
 from app.tools.logger import ToolExecutionLogStore
 from app.tools.permissions import ToolPermissionManager
 from app.tools.registry import ToolRegistry
@@ -19,12 +21,14 @@ class ToolExecutor:
         permission_manager: ToolPermissionManager | None = None,
         sandbox: ToolSandbox | None = None,
         log_store: ToolExecutionLogStore | None = None,
+        approval_store: ToolApprovalStore | None = None,
     ) -> None:
         self._registry = registry
         self._event_bus = event_bus
         self._permission_manager = permission_manager or ToolPermissionManager()
         self._sandbox = sandbox or ToolSandbox()
         self._log_store = log_store or ToolExecutionLogStore()
+        self._approval_store = approval_store or ToolApprovalStore()
 
     async def execute_call(self, call: ToolCall) -> ToolResult:
         return await self.execute(
@@ -45,11 +49,7 @@ class ToolExecutor:
         session_id = str(kwargs.get("session_id", ""))
         agent_id = str(kwargs.get("agent_id", "main"))
 
-        allowed, deny_reason = self._permission_manager.authorize(
-            tool_name=tool_name,
-            caller=caller,
-            confirm=confirm,
-        )
+        allowed, deny_reason = self._permission_manager.is_allowed(tool_name)
         if not allowed:
             result = ToolResult(success=False, content=deny_reason or "tool blocked")
             latency_ms = round((perf_counter() - started) * 1000, 3)
@@ -121,7 +121,74 @@ class ToolExecutor:
             self._emit("tool.execution.denied", tool_name, session_id, agent_id, result.success, sandbox_reason, latency_ms)
             return result
 
-        result = await tool.run(**safe_kwargs)
+        if self._permission_manager.requires_confirmation(tool_name) and caller != "system" and not confirm:
+            if tool_name == "shell":
+                approval = self._approval_store.create(
+                    tool_name=tool_name,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    caller=caller,
+                    args=safe_kwargs,
+                    command_preview=str(safe_kwargs.get("input", "")).strip(),
+                    category=classify_shell_command(str(safe_kwargs.get("input", "")).strip()),
+                )
+                result = ToolResult(
+                    success=False,
+                    content=f"shell command awaiting approval: {approval.approval_id}",
+                    data={"pending_approval": True, "approval": approval.to_dict()},
+                )
+                latency_ms = round((perf_counter() - started) * 1000, 3)
+                record = self._record(
+                    tool_name=tool_name,
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    caller=caller,
+                    args=safe_kwargs,
+                    result=result,
+                    latency_ms=latency_ms,
+                    denied_reason="approval pending",
+                )
+                self._attach_trace(result, record)
+                self._emit(
+                    "tool.approval.created",
+                    tool_name,
+                    session_id,
+                    agent_id,
+                    False,
+                    None,
+                    latency_ms,
+                    extra_payload={
+                        "approval_id": approval.approval_id,
+                        "category": approval.category,
+                        "command_preview": approval.command_preview,
+                    },
+                )
+                return result
+
+            result = ToolResult(success=False, content=f"tool requires confirmation: {tool_name}")
+            latency_ms = round((perf_counter() - started) * 1000, 3)
+            record = self._record(
+                tool_name=tool_name,
+                session_id=session_id,
+                agent_id=agent_id,
+                caller=caller,
+                args=safe_kwargs,
+                result=result,
+                latency_ms=latency_ms,
+                denied_reason=f"tool requires confirmation: {tool_name}",
+            )
+            self._attach_trace(result, record)
+            self._emit("tool.execution.denied", tool_name, session_id, agent_id, result.success, f"tool requires confirmation: {tool_name}", latency_ms)
+            return result
+
+        execution_kwargs = dict(safe_kwargs)
+        if tool_name == "shell":
+            execution_kwargs = {
+                **safe_kwargs,
+                "stream_handler": self._build_shell_stream_handler(session_id=session_id, agent_id=agent_id, tool_name=tool_name),
+            }
+
+        result = await tool.run(**execution_kwargs)
         latency_ms = round((perf_counter() - started) * 1000, 3)
         record = self._record(
             tool_name=tool_name,
@@ -136,6 +203,56 @@ class ToolExecutor:
         self._attach_trace(result, record)
         self._emit("tool.execution.completed", tool_name, session_id, agent_id, result.success, None, latency_ms)
         return result
+
+    async def approve(self, approval_id: str) -> dict[str, Any] | None:
+        approval = self._approval_store.get(approval_id)
+        if approval is None or approval.status != ToolApprovalStatus.PENDING:
+            return None
+
+        self._emit(
+            "tool.approval.approved",
+            approval.tool_name,
+            approval.session_id,
+            approval.agent_id,
+            True,
+            None,
+            0.0,
+            extra_payload={"approval_id": approval.approval_id, "category": approval.category},
+        )
+        result = await self.execute(
+            approval.tool_name,
+            **{**approval.args, "caller": approval.caller, "confirm": True},
+        )
+        resolved = self._approval_store.resolve(
+            approval_id,
+            success=result.success,
+            result={"content": result.content, "data": result.data},
+            reason=None,
+        )
+        return resolved.to_dict() if resolved is not None else None
+
+    def reject(self, approval_id: str, reason: str = "manual reject") -> dict[str, Any] | None:
+        approval = self._approval_store.reject(approval_id, reason=reason)
+        if approval is None:
+            return None
+        self._emit(
+            "tool.approval.rejected",
+            approval.tool_name,
+            approval.session_id,
+            approval.agent_id,
+            False,
+            reason,
+            0.0,
+            extra_payload={"approval_id": approval.approval_id, "category": approval.category},
+        )
+        return approval.to_dict()
+
+    def approval_snapshot(self, limit: int = 20) -> dict[str, Any]:
+        return {
+            "stats": self._approval_store.stats(),
+            "items": self._approval_store.list(status=ToolApprovalStatus.PENDING, limit=limit),
+            "recent": self._approval_store.list(limit=limit),
+        }
 
     def prompt_tool_catalog(self) -> list[dict[str, Any]]:
         specs = self._registry.list_specs()
@@ -210,6 +327,7 @@ class ToolExecutor:
             success=result.success,
             latency_ms=latency_ms,
             result_preview=result.content[:500],
+            result_data=dict(result.data),
             denied_reason=denied_reason,
         )
         self._log_store.append(record)
@@ -217,6 +335,21 @@ class ToolExecutor:
 
     def _attach_trace(self, result: ToolResult, record: ToolExecutionRecord) -> None:
         result.data = {**result.data, "trace": record.to_dict()}
+
+    def _build_shell_stream_handler(self, *, session_id: str, agent_id: str, tool_name: str):
+        async def _handler(*, stream: str, text: str) -> None:
+            self._emit(
+                "tool.execution.stream",
+                tool_name,
+                session_id,
+                agent_id,
+                True,
+                None,
+                0.0,
+                extra_payload={"stream": stream, "text": text},
+            )
+
+        return _handler
 
     def _emit(
         self,
@@ -227,6 +360,7 @@ class ToolExecutor:
         success: bool,
         denied_reason: str | None,
         latency_ms: float,
+        extra_payload: dict[str, Any] | None = None,
     ) -> None:
         if self._event_bus is None:
             return
@@ -239,6 +373,7 @@ class ToolExecutor:
                 "success": success,
                 "latency_ms": latency_ms,
                 "denied_reason": denied_reason,
+                **(extra_payload or {}),
             },
         )
 

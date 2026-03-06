@@ -772,6 +772,22 @@ button {
   color: #b8c7ff;
 }
 
+.approval-action-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.shell-live-output {
+  max-height: 180px;
+  overflow: auto;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: #d6e5ff;
+}
+
 .context-block {
   margin: 0;
   font-family: inherit;

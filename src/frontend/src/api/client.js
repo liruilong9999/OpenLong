@@ -159,6 +159,29 @@ export async function fetchSystemDashboard() {
 }
 
 
+export async function fetchToolApprovals(limit = 20) {
+  return requestJson(`/tools/approvals?limit=${limit}`);
+}
+
+
+export async function approveToolApproval(approvalId) {
+  return requestJson(`/tools/approvals/${approvalId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({}),
+    timeoutMs: 180000,
+  });
+}
+
+
+export async function rejectToolApproval(approvalId, reason = "manual reject") {
+  return requestJson(`/tools/approvals/${approvalId}/reject`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+    timeoutMs: 30000,
+  });
+}
+
+
 export class ChatSocketClient {
   constructor(sessionId, handlers = {}, connectTimeoutMs = 5000) {
     this.sessionId = sessionId;

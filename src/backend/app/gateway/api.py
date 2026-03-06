@@ -68,6 +68,10 @@ class ToolTaskRequest(BaseModel):
     confirm: bool = False
 
 
+class ToolApprovalDecisionRequest(BaseModel):
+    reason: str = Field(default="manual reject")
+
+
 class MemoryTaskRequest(BaseModel):
     session_id: str
     agent_id: str = Field(default="main")
@@ -410,6 +414,28 @@ def build_api_router() -> APIRouter:
     @router.get("/tools/logs")
     async def tool_logs(request: Request, limit: int = 100, tool_name: str | None = None) -> dict[str, Any]:
         return request.app.state.runtime.tool_logs(limit=limit, tool_name=tool_name)
+
+    @router.get("/tools/approvals")
+    async def tool_approvals(request: Request, limit: int = 20) -> dict[str, Any]:
+        return request.app.state.runtime.tool_approvals(limit=limit)
+
+    @router.post("/tools/approvals/{approval_id}/approve")
+    async def approve_tool_approval(approval_id: str, request: Request) -> dict[str, Any]:
+        result = await request.app.state.runtime.approve_tool_approval(approval_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        return result
+
+    @router.post("/tools/approvals/{approval_id}/reject")
+    async def reject_tool_approval(
+        approval_id: str,
+        body: ToolApprovalDecisionRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        result = request.app.state.runtime.reject_tool_approval(approval_id, reason=body.reason)
+        if result is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        return result
 
     @router.post("/tools/debug/execute")
     async def debug_execute_tool(body: ToolTaskRequest, request: Request) -> dict[str, Any]:

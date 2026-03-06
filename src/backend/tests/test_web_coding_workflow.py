@@ -58,7 +58,7 @@ def test_web_chat_can_create_directory_write_code_and_read_back(monkeypatch, tmp
     assert any(item["tool_name"] == "file" for item in logs_payload["items"])
 
 
-def test_web_tool_shell_is_disabled_by_default(monkeypatch, tmp_path: Path) -> None:
+def test_web_tool_shell_requires_approval_by_default(monkeypatch, tmp_path: Path) -> None:
     client = _create_client(monkeypatch, tmp_path)
 
     session_resp = client.post("/sessions", json={"session_id": "web-shell-s1", "agent_id": "main"})
@@ -70,12 +70,17 @@ def test_web_tool_shell_is_disabled_by_default(monkeypatch, tmp_path: Path) -> N
             "tool_name": "shell",
             "session_id": "web-shell-s1",
             "agent_id": "main",
-            "confirm": True,
+            "confirm": False,
             "args": {"input": "echo hello-from-shell"},
         },
     )
     assert shell_resp.status_code == 200
     payload = shell_resp.json()
     assert payload["success"] is False
-    assert "disabled" in payload["content"]
+    assert payload["data"]["pending_approval"] is True
 
+    approval_id = payload["data"]["approval"]["approval_id"]
+    approve_resp = client.post(f"/tools/approvals/{approval_id}/approve", json={})
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["status"] == "executed"
+    assert "hello-from-shell" in (approve_resp.json()["result"] or {}).get("content", "")

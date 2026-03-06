@@ -80,7 +80,7 @@ class Settings(BaseSettings):
 
     workspace_root: str = Field(default="workspace")
     tool_profile: str = Field(default="coding")
-    tool_shell_enabled: bool = Field(default=False)
+    tool_shell_enabled: bool = Field(default=True)
     tool_allowlist: str = Field(default="")
     tool_denylist: str = Field(default="")
     tool_confirmation_required: str = Field(default="shell")

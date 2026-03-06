@@ -62,9 +62,14 @@ def test_tool_executor_permissions_and_sandbox(tmp_path: Path) -> None:
 
     executor = _build_executor(tmp_path)
 
-    denied = asyncio.run(executor.execute("shell", input="echo hi", caller="agent", confirm=False))
-    assert denied.success is False
-    assert "requires confirmation" in denied.content
+    pending = asyncio.run(executor.execute("shell", input="echo hi", caller="agent", confirm=False, session_id="s1", agent_id="main"))
+    assert pending.success is False
+    assert pending.data["pending_approval"] is True
+    assert pending.data["approval"]["category"] == "safe_read"
+
+    blocked = asyncio.run(executor.execute("shell", input="rm -rf /", caller="agent", confirm=True, session_id="s1", agent_id="main"))
+    assert blocked.success is False
+    assert "dangerous" in blocked.content or "blocked" in blocked.content
 
     traversal = asyncio.run(
         executor.execute(
@@ -126,6 +131,11 @@ def test_tool_debug_api_and_logs() -> None:
     )
     assert shell_resp.status_code == 200
     assert shell_resp.json()["success"] is False
+    assert shell_resp.json()["data"]["pending_approval"] is True
+
+    approvals_resp = client.get("/tools/approvals")
+    assert approvals_resp.status_code == 200
+    assert approvals_resp.json()["stats"]["pending"] >= 1
 
     logs_resp = client.get("/tools/logs", params={"limit": 20})
     assert logs_resp.status_code == 200

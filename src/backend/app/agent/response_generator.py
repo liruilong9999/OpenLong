@@ -13,12 +13,13 @@ class ResponseGenerator:
         lines: list[str] = []
 
         if tool_traces:
+            pending_count = sum(1 for trace in tool_traces if trace.data.get("pending_approval"))
             success_count = sum(1 for trace in tool_traces if trace.success)
-            fail_count = len(tool_traces) - success_count
-            lines.append(f"工具执行完成：成功 {success_count}，失败 {fail_count}。")
+            fail_count = len(tool_traces) - success_count - pending_count
+            lines.append(f"工具执行完成：成功 {success_count}，待审批 {pending_count}，失败 {max(fail_count, 0)}。")
 
             for trace in tool_traces[-3:]:
-                status = "OK" if trace.success else "FAILED"
+                status = "PENDING" if trace.data.get("pending_approval") else "OK" if trace.success else "FAILED"
                 preview = trace.content.replace("\n", " ")[:220]
                 lines.append(f"- [{status}] {trace.call.name}: {preview}")
 

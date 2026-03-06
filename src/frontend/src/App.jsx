@@ -2,6 +2,7 @@ import { Children, isValidElement, useEffect, useMemo, useRef, useState } from "
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  approveToolApproval,
   checkHealth,
   createChatSocket,
   createSession,
@@ -11,6 +12,7 @@ import {
   fetchSessions,
   fetchSkillsDashboard,
   fetchSystemDashboard,
+  rejectToolApproval,
   resolveApiUrl,
   sendChatMessage,
   uploadSessionAttachments,
@@ -130,6 +132,18 @@ function eventToText(payload) {
   }
   if (eventName === "tool.execution.denied") {
     return `工具 ${body.tool_name || "unknown"} 被拦截`;
+  }
+  if (eventName === "tool.approval.created") {
+    return `命令待审批：${body.command_preview || body.tool_name || "shell"}`;
+  }
+  if (eventName === "tool.approval.approved") {
+    return `命令已批准：${body.tool_name || "shell"}`;
+  }
+  if (eventName === "tool.approval.rejected") {
+    return `命令已拒绝：${body.tool_name || "shell"}`;
+  }
+  if (eventName === "tool.execution.stream") {
+    return `${body.stream || "stdout"}: ${String(body.text || "").trim()}`;
   }
   if (eventName === "memory.write.completed") {
     return "记忆已更新";
@@ -302,6 +316,8 @@ function App() {
   const [activityItems, setActivityItems] = useState([]);
   const [copiedMessageKey, setCopiedMessageKey] = useState("");
   const [sessionTitles, setSessionTitles] = useState(() => loadStoredTitles());
+  const [approvalBusyId, setApprovalBusyId] = useState("");
+  const [liveShellLines, setLiveShellLines] = useState([]);
   const [inspector, setInspector] = useState({
     loading: true,
     error: "",
@@ -432,6 +448,15 @@ function App() {
       onStatus: (status) => setSocketStatus(status),
       onMessage: (payload) => {
         if (payload.type === "event") {
+          if (payload.name === "tool.execution.stream") {
+            const stream = payload?.payload?.stream || "stdout";
+            const text = String(payload?.payload?.text || "").trim();
+            if (text) {
+              setLiveShellLines((current) => [...current, `[${stream}] ${text}`].slice(-24));
+              setActivityItems((current) => mergeActivity(current, `${stream}: ${text}`));
+            }
+            return;
+          }
           const text = eventToText(payload);
           if (!text) {
             return;
@@ -468,6 +493,7 @@ function App() {
     setLoadingHistory(true);
     setGlobalHint("");
     setActivityItems([]);
+    setLiveShellLines([]);
 
     try {
       const history = await fetchSessionHistory(sessionId, 100);
@@ -506,6 +532,7 @@ function App() {
       const sessionId = snapshot.session_id;
       setSelectedSessionId(sessionId);
       setMessages([]);
+      setLiveShellLines([]);
       setSessions((current) => sortSessions([snapshot, ...current.filter((item) => item.session_id !== sessionId)]));
       await ensureSocket(sessionId);
     } catch (error) {
@@ -523,7 +550,35 @@ function App() {
     setSelectedSessionId(sessionId);
     setSessions((current) => sortSessions([snapshot, ...current.filter((item) => item.session_id !== sessionId)]));
     setMessages([]);
+    setLiveShellLines([]);
     return sessionId;
+  }
+
+  async function handleApproveApproval(approvalId) {
+    setApprovalBusyId(approvalId);
+    try {
+      const payload = await approveToolApproval(approvalId);
+      const resultText = payload?.result?.content || payload?.decision_reason || "命令已执行";
+      setGlobalHint(`已批准命令：${resultText}`);
+      await refreshInspector();
+    } catch (error) {
+      setGlobalHint(`批准失败：${error.message}`);
+    } finally {
+      setApprovalBusyId("");
+    }
+  }
+
+  async function handleRejectApproval(approvalId) {
+    setApprovalBusyId(approvalId);
+    try {
+      await rejectToolApproval(approvalId, "manual reject from web");
+      setGlobalHint("已拒绝命令审批");
+      await refreshInspector();
+    } catch (error) {
+      setGlobalHint(`拒绝失败：${error.message}`);
+    } finally {
+      setApprovalBusyId("");
+    }
   }
 
   async function uploadFilesForSession(files) {
@@ -855,6 +910,7 @@ function App() {
           <div className="metric-row"><span>当前会话</span><strong>{selectedSessionId ? selectedSessionId.slice(0, 8) : "未选择"}</strong></div>
           <div className="metric-row"><span>API Key</span><strong>{String(health.key_configured || false)}</strong></div>
           <div className="metric-row"><span>任务队列</span><strong>{inspector.system?.task_queue?.total ?? 0}</strong></div>
+          <div className="metric-row"><span>待审批命令</span><strong>{inspector.system?.tool_approvals?.stats?.pending ?? 0}</strong></div>
           <div className="mini-card">
             <div className="mini-card-title">RULES.md</div>
             <div className="mini-card-text"><RichMarkdownText content={previewText(contextBody(inspector.context, "RULES.md"), 90)} /></div>
@@ -862,6 +918,57 @@ function App() {
           <div className="mini-card">
             <div className="mini-card-title">STYLE.md</div>
             <div className="mini-card-text"><RichMarkdownText content={previewText(contextBody(inspector.context, "STYLE.md"), 90)} /></div>
+          </div>
+        </InspectorSection>
+
+        <InspectorSection title="Shell 审批与执行">
+          {!!(inspector.system?.tool_approvals?.items || []).length && (
+            <div className="stack-list">
+              {(inspector.system?.tool_approvals?.items || []).map((item) => (
+                <div key={item.approval_id} className="mini-card">
+                  <div className="mini-card-title">{item.category} · {item.tool_name}</div>
+                  <div className="mini-card-text">
+                    <code>{item.command_preview}</code>
+                    <div>cwd: {item.args?.cwd || item.args?.cwd_scope || "project root"}</div>
+                  </div>
+                  <div className="approval-action-row">
+                    <button type="button" disabled={approvalBusyId === item.approval_id} onClick={() => handleApproveApproval(item.approval_id)}>
+                      {approvalBusyId === item.approval_id ? "处理中" : "批准执行"}
+                    </button>
+                    <button type="button" disabled={approvalBusyId === item.approval_id} onClick={() => handleRejectApproval(item.approval_id)}>
+                      拒绝
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {!(inspector.system?.tool_approvals?.items || []).length && <div className="panel-hint">当前没有待审批的命令。</div>}
+
+          {!!liveShellLines.length && (
+            <div className="mini-card">
+              <div className="mini-card-title">实时输出</div>
+              <div className="shell-live-output">
+                {liveShellLines.map((line, index) => (
+                  <div key={`${line}-${index}`}>{line}</div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="stack-list">
+            {(inspector.system?.shell_logs?.items || []).slice(0, 5).map((item) => (
+              <div key={item.execution_id} className="mini-card">
+                <div className="mini-card-title">
+                  {item.success ? "成功" : "失败"} · {item.result_data?.category || "shell"} · exit {String(item.result_data?.exit_code ?? "n/a")}
+                </div>
+                <div className="mini-card-text">
+                  <code>{item.args?.input || ""}</code>
+                  <div>cwd: {item.result_data?.cwd || item.args?.cwd || "project root"}</div>
+                  <div>{item.result_preview || item.denied_reason || "暂无输出"}</div>
+                </div>
+              </div>
+            ))}
           </div>
         </InspectorSection>
       </aside>
