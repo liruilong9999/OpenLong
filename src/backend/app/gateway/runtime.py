@@ -262,13 +262,17 @@ class GatewayRuntime:
         session = self.session_manager.get(session_id)
         resolved_agent_id = agent_id or (session.agent_id if session is not None else "main")
         self.agent_manager.ensure_agent(resolved_agent_id)
+        items = [
+            self._decorate_upload_item(session_id=session_id, item=item)
+            for item in self.workspace_manager.list_session_uploads(
+                resolved_agent_id,
+                session_id=session_id,
+            )
+        ]
         return {
             "session_id": session_id,
             "agent_id": resolved_agent_id,
-            "items": self.workspace_manager.list_session_uploads(
-                resolved_agent_id,
-                session_id=session_id,
-            ),
+            "items": items,
         }
 
     def store_session_upload(
@@ -292,6 +296,7 @@ class GatewayRuntime:
             content=content,
             content_type=content_type,
         )
+        item = self._decorate_upload_item(session_id=session_id, item=item)
         self.event_bus.emit(
             "workspace.file_uploaded",
             {
@@ -303,6 +308,43 @@ class GatewayRuntime:
             },
         )
         return item
+
+    def get_session_upload(self, session_id: str, saved_name: str, agent_id: str | None = None) -> dict[str, Any] | None:
+        session = self.session_manager.get(session_id)
+        resolved_agent_id = agent_id or (session.agent_id if session is not None else "main")
+        self.agent_manager.ensure_agent(resolved_agent_id)
+        path = self.workspace_manager.get_session_upload_path(
+            resolved_agent_id,
+            session_id=session_id,
+            saved_name=saved_name,
+        )
+        if path is None:
+            return None
+
+        for item in self.workspace_manager.list_session_uploads(resolved_agent_id, session_id=session_id):
+            if item.get("saved_name") == path.name:
+                return self._decorate_upload_item(session_id=session_id, item=item)
+
+        return self._decorate_upload_item(
+            session_id=session_id,
+            item={
+                "agent_id": resolved_agent_id,
+                "session_id": session_id,
+                "saved_name": path.name,
+                "filename": path.name,
+                "relative_path": path.relative_to(self.workspace_manager.workspace_root / resolved_agent_id).as_posix(),
+                "absolute_path": str(path),
+                "content_type": "application/octet-stream",
+                "size": path.stat().st_size,
+            },
+        )
+
+    def _decorate_upload_item(self, *, session_id: str, item: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(item)
+        saved_name = str(payload.get("saved_name") or payload.get("filename") or "")
+        if saved_name:
+            payload["preview_url"] = f"/sessions/{session_id}/attachments/{saved_name}"
+        return payload
 
     def create_session(
         self,

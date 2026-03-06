@@ -4,6 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 
@@ -201,6 +202,27 @@ def build_api_router() -> APIRouter:
             "agent_id": items[0]["agent_id"],
             "items": items,
         }
+
+    @router.get("/sessions/{session_id}/attachments/{saved_name}")
+    async def get_session_attachment(
+        session_id: str,
+        saved_name: str,
+        request: Request,
+        agent_id: str | None = None,
+    ) -> FileResponse:
+        item = request.app.state.runtime.get_session_upload(
+            session_id=session_id,
+            saved_name=saved_name,
+            agent_id=agent_id,
+        )
+        if item is None:
+            raise HTTPException(status_code=404, detail="attachment not found")
+
+        return FileResponse(
+            path=item["absolute_path"],
+            media_type=item.get("content_type") or "application/octet-stream",
+            filename=item.get("filename") or item.get("saved_name") or saved_name,
+        )
 
     @router.post("/sessions/{session_id}/assign-agent")
     async def assign_agent(session_id: str, body: SessionAssignRequest, request: Request) -> dict[str, Any]:

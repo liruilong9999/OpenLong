@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import mimetypes
 from pathlib import Path
 import re
 import shutil
@@ -382,18 +383,32 @@ class WorkspaceManager:
             if not path.is_file():
                 continue
             stat = path.stat()
+            content_type, _ = mimetypes.guess_type(path.name)
             items.append(
                 {
                     "agent_id": agent_id,
                     "session_id": session_id,
                     "saved_name": path.name,
+                    "filename": path.name,
                     "relative_path": path.relative_to(workspace).as_posix(),
                     "absolute_path": str(path),
+                    "content_type": content_type or "application/octet-stream",
                     "size": stat.st_size,
                     "uploaded_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                 }
             )
         return items
+
+    def get_session_upload_path(self, agent_id: str, *, session_id: str, saved_name: str) -> Path | None:
+        workspace = self.ensure_agent_workspace(agent_id)
+        uploads_dir = workspace / UPLOADS_DIR / self._normalize_path_token(session_id)
+        if not uploads_dir.exists():
+            return None
+
+        candidate = uploads_dir / Path(saved_name).name
+        if not candidate.exists() or not candidate.is_file():
+            return None
+        return candidate
 
     def delete_workspace_file(self, agent_id: str, filename: str) -> bool:
         workspace = self.ensure_agent_workspace(agent_id)

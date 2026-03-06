@@ -13,6 +13,17 @@ function toWebSocketBase(apiBase) {
 }
 
 
+export function resolveApiUrl(path) {
+  if (!path) {
+    return API_BASE;
+  }
+  if (/^https?:\/\//i.test(path)) {
+    return path;
+  }
+  return `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+
 async function requestJson(path, options = {}) {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, headers, ...rest } = options;
   const controller = new AbortController();

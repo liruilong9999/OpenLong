@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   checkHealth,
   createChatSocket,
@@ -9,6 +11,7 @@ import {
   fetchSessions,
   fetchSkillsDashboard,
   fetchSystemDashboard,
+  resolveApiUrl,
   sendChatMessage,
   uploadSessionAttachments,
 } from "./api/client";
@@ -120,24 +123,39 @@ function eventToText(payload) {
   const body = payload?.payload || {};
 
   if (eventName === "agent.execution.started") {
-    return "系统：正在分析你的请求…";
+    return "正在分析";
   }
   if (eventName === "tool.execution.completed") {
-    return `系统：工具 ${body.tool_name || "unknown"} 已执行完成`;
+    return `工具 ${body.tool_name || "unknown"} 已完成`;
   }
   if (eventName === "tool.execution.denied") {
-    return `系统：工具 ${body.tool_name || "unknown"} 被拦截`;
+    return `工具 ${body.tool_name || "unknown"} 被拦截`;
   }
   if (eventName === "memory.write.completed") {
-    return "系统：记忆已更新";
+    return "记忆已更新";
   }
   if (eventName === "context.updated") {
-    return "系统：上下文已更新";
+    return "上下文已更新";
   }
   if (eventName === "skill.updated") {
-    return "系统：技能已更新";
+    return "技能已更新";
+  }
+  if (eventName === "workspace.file_uploaded") {
+    return `已上传 ${body.filename || "附件"}`;
   }
   return "";
+}
+
+
+function mergeActivity(items, nextItem) {
+  const value = String(nextItem || "").trim();
+  if (!value) {
+    return items;
+  }
+  if (items.includes(value)) {
+    return items;
+  }
+  return [...items, value].slice(-5);
 }
 
 
@@ -207,17 +225,20 @@ function isTextLikeFile(file) {
 
 function normalizeUploadedAttachment(item) {
   const type = item.content_type || item.type || "application/octet-stream";
+  const previewUrl = item.preview_url || item.previewUrl ? resolveApiUrl(item.preview_url || item.previewUrl) : "";
   return {
     id: item.relative_path || item.absolute_path || `${item.filename || item.saved_name}-${crypto.randomUUID()}`,
     name: item.filename || item.saved_name || "upload.bin",
     savedName: item.saved_name || item.filename || "upload.bin",
     relativePath: item.relative_path || "",
     absolutePath: item.absolute_path || "",
+    previewUrl,
     type,
     size: Number(item.size || 0),
     sizeLabel: formatFileSize(Number(item.size || 0)),
     uploadedAt: item.uploaded_at || "",
     category: String(type).split("/")[0] || "file",
+    isImage: String(type).toLowerCase().startsWith("image/"),
   };
 }
 
@@ -256,6 +277,7 @@ function App() {
   const [sending, setSending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [globalHint, setGlobalHint] = useState("");
+  const [activityItems, setActivityItems] = useState([]);
   const [sessionTitles, setSessionTitles] = useState(() => loadStoredTitles());
   const [inspector, setInspector] = useState({
     loading: true,
@@ -386,27 +408,13 @@ function App() {
           if (!text) {
             return;
           }
-          setMessages((current) => [
-            ...current,
-            {
-              role: "system",
-              content: text,
-              timestamp: payload.timestamp || new Date().toISOString(),
-            },
-          ]);
+          setActivityItems((current) => mergeActivity(current, text));
           void refreshInspector();
           return;
         }
 
         if (payload.type === "error") {
-          setMessages((current) => [
-            ...current,
-            {
-              role: "system",
-              content: `系统：${payload.error}`,
-              timestamp: new Date().toISOString(),
-            },
-          ]);
+          setGlobalHint(`实时消息异常：${payload.error}`);
         }
       },
     });
@@ -431,6 +439,7 @@ function App() {
     setSelectedSessionId(sessionId);
     setLoadingHistory(true);
     setGlobalHint("");
+    setActivityItems([]);
 
     try {
       const history = await fetchSessionHistory(sessionId, 100);
@@ -527,6 +536,7 @@ function App() {
 
     setSending(true);
     setGlobalHint("");
+    setActivityItems([]);
     setMessages((current) => [
       ...current,
       {
@@ -553,6 +563,7 @@ function App() {
           saved_name: item.savedName,
           relative_path: item.relativePath,
           absolute_path: item.absolutePath,
+          preview_url: item.previewUrl,
           content_type: item.type,
           size: item.size,
         })),
@@ -566,6 +577,7 @@ function App() {
           timestamp: new Date().toISOString(),
         },
       ]);
+      setActivityItems([]);
 
       if (firstUserTurn) {
         setSessionTitles((current) => ({
@@ -680,6 +692,9 @@ function App() {
           ) : (
             <div className="message-scroll" ref={messagesRef}>
               {loadingHistory && <div className="panel-hint">正在加载会话记录…</div>}
+              {!!activityItems.length && (
+                <div className="activity-line">思考中：{activityItems.join(" · ")}</div>
+              )}
 
               {messages.map((item, index) => (
                 <div key={`${item.role}-${index}-${item.timestamp || ""}`} className={`message-row ${item.role}`}>
@@ -687,11 +702,21 @@ function App() {
                     <div className="message-role">
                       {item.role === "user" ? "你" : item.role === "assistant" ? "OpenLong" : "系统"}
                     </div>
-                    <div className="message-content">{item.content}</div>
+                    <div className="message-content">
+                      <MarkdownMessage content={item.content} />
+                    </div>
                     {!!item.attachments?.length && (
                       <div className="message-attachments">
                         {item.attachments.map((attachment) => (
                           <div key={attachment.id} className="message-attachment-chip">
+                            {attachment.isImage && attachment.previewUrl && (
+                              <img
+                                className="message-attachment-preview"
+                                src={attachment.previewUrl}
+                                alt={attachment.name}
+                                loading="lazy"
+                              />
+                            )}
                             <div className="message-attachment-name">{attachment.name}</div>
                             <div className="message-attachment-meta">
                               {attachment.type || "unknown"} · {attachment.sizeLabel}
@@ -910,6 +935,14 @@ function ChatComposer({ sending, onSend, onUploadFiles, sessionId }) {
         <div className="attachment-list">
           {attachments.map((attachment) => (
             <div key={attachment.id} className="attachment-chip">
+              {attachment.isImage && attachment.previewUrl && (
+                <img
+                  className="attachment-chip-preview"
+                  src={attachment.previewUrl}
+                  alt={attachment.name}
+                  loading="lazy"
+                />
+              )}
               <div className="attachment-chip-main">
                 <div className="attachment-chip-title">{attachment.name}</div>
                 <div className="attachment-chip-meta">
@@ -966,6 +999,20 @@ function InspectorSection({ title, children }) {
       <div className="inspector-section-title">{title}</div>
       <div className="inspector-section-body">{children}</div>
     </section>
+  );
+}
+
+
+function MarkdownMessage({ content }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a: ({ node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+      }}
+    >
+      {String(content || "")}
+    </ReactMarkdown>
   );
 }
 

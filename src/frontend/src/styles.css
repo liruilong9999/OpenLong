@@ -33,6 +33,7 @@ body {
     linear-gradient(180deg, #1f2024 0%, #17181b 100%);
   color: var(--text);
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  overflow: hidden;
 }
 
 button,
@@ -49,7 +50,8 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 360px;
-  height: 100%;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar-shell,
@@ -213,6 +215,7 @@ button {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   background: transparent;
 }
 
@@ -276,6 +279,7 @@ button {
   padding: 8px 28px 28px;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .chat-stage.empty {
@@ -305,6 +309,22 @@ button {
   min-height: 0;
   overflow: auto;
   padding: 4px 0 24px;
+}
+
+.activity-line {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 auto 12px;
+  width: min(820px, 100%);
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.6;
+  backdrop-filter: blur(12px);
 }
 
 .message-row {
@@ -349,8 +369,80 @@ button {
 }
 
 .message-content {
-  white-space: pre-wrap;
   line-height: 1.8;
+}
+
+.message-content > :first-child {
+  margin-top: 0;
+}
+
+.message-content > :last-child {
+  margin-bottom: 0;
+}
+
+.message-content p,
+.message-content ul,
+.message-content ol,
+.message-content blockquote,
+.message-content pre,
+.message-content table,
+.message-content h1,
+.message-content h2,
+.message-content h3,
+.message-content h4 {
+  margin: 0 0 12px;
+}
+
+.message-content ul,
+.message-content ol {
+  padding-left: 22px;
+}
+
+.message-content li + li {
+  margin-top: 6px;
+}
+
+.message-content code {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 12px;
+}
+
+.message-content pre {
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--line);
+}
+
+.message-content pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.message-content blockquote {
+  padding-left: 12px;
+  border-left: 3px solid rgba(139, 125, 255, 0.5);
+  color: var(--text-soft);
+}
+
+.message-content table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.message-content th,
+.message-content td {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  text-align: left;
+}
+
+.message-content a {
+  color: #b8c7ff;
 }
 
 .message-time {
@@ -368,6 +460,15 @@ button {
   border-radius: 14px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.message-attachment-preview {
+  width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+  border-radius: 12px;
+  margin-bottom: 10px;
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .message-attachment-name {
@@ -409,6 +510,15 @@ button {
   border-radius: 14px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.05);
+}
+
+.attachment-chip-preview {
+  width: 54px;
+  height: 54px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  flex-shrink: 0;
 }
 
 .attachment-chip-main {
@@ -507,6 +617,7 @@ button {
   border-left: 1px solid var(--line);
   padding: 20px 18px;
   overflow: auto;
+  min-height: 0;
 }
 
 .inspector-header {

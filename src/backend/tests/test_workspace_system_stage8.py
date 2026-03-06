@@ -217,6 +217,11 @@ def test_session_attachment_upload_persists_files() -> None:
     assert list_resp.status_code == 200
     listed = list_resp.json()["items"]
     assert len(listed) >= 2
+    assert listed[0]["preview_url"].startswith("/sessions/upload-s1/attachments/")
+
+    preview_resp = client.get(listed[0]["preview_url"])
+    assert preview_resp.status_code == 200
+    assert preview_resp.content
 
     workspace_resp = client.get("/workspaces/main")
     assert workspace_resp.status_code == 200
