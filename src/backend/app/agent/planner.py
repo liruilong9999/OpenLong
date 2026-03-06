@@ -146,6 +146,10 @@ class Planner:
         if shorthand:
             return shorthand
 
+        structured = self._structured_model_calls(model_output)
+        if structured:
+            return structured
+
         natural = self._natural_language_commands(user_message)
         if natural:
             return natural
@@ -154,6 +158,9 @@ class Planner:
             return []
 
         return self._tool_call_from_hint(user_message=user_message, tool_hint=model_output.tool_hint)
+
+    def _structured_model_calls(self, model_output: ModelOutput) -> list[ToolCall]:
+        return [ToolCall(name=item.name, args=dict(item.args), reason=item.reason or "model_structured_tool_call") for item in model_output.tool_calls]
 
     def _explicit_tool_command(self, user_message: str) -> list[ToolCall]:
         if not user_message.startswith("/tool "):
@@ -292,6 +299,27 @@ class Planner:
             return [ToolCall(name="shell", args={"input": "Get-Location"}, reason="model_shell_hint_default")]
 
         return []
+
+
+def infer_structured_tool_calls(user_message: str, tool_hint: str | None = None) -> list[ToolCall]:
+    planner = Planner(max_iterations=1)
+
+    explicit = planner._explicit_tool_command(user_message)
+    if explicit:
+        return explicit
+
+    shorthand = planner._shorthand_commands(user_message)
+    if shorthand:
+        return shorthand
+
+    natural = planner._natural_language_commands(user_message)
+    if natural:
+        return natural
+
+    if tool_hint:
+        return planner._tool_call_from_hint(user_message=user_message, tool_hint=tool_hint)
+
+    return []
 
 
 def _extract_file_path(text: str) -> str | None:

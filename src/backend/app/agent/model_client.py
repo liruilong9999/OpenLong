@@ -2,6 +2,7 @@
 
 import base64
 from dataclasses import dataclass, field
+import json
 import mimetypes
 import os
 from pathlib import Path
@@ -11,7 +12,8 @@ from typing import Any, Callable, Protocol
 
 import httpx
 
-from app.agent.types import ModelOutput
+from app.agent.planner import infer_structured_tool_calls
+from app.agent.types import ModelOutput, ToolCall
 from app.core.config import Settings
 
 
@@ -44,6 +46,7 @@ class HeuristicModelClient:
         lower = user_message.lower()
         prompt = request.prompt
         tool_hint = self._guess_tool_hint(user_message)
+        structured_calls = infer_structured_tool_calls(user_message, tool_hint=tool_hint)
 
         if request.attachments and any(self._is_image_attachment(item) for item in request.attachments):
             return ModelOutput(
@@ -86,9 +89,10 @@ class HeuristicModelClient:
             return ModelOutput(
                 text="检测到显式工具命令，准备执行工具。",
                 confidence=0.9,
-                should_call_tool=True,
+                should_call_tool=bool(structured_calls),
                 should_continue=True,
                 tool_hint=tool_hint,
+                tool_calls=structured_calls,
                 metadata={"mode": "explicit_tool", "prompt_chars": len(request.prompt)},
             )
 
@@ -105,9 +109,10 @@ class HeuristicModelClient:
             return ModelOutput(
                 text="该任务可能需要工具信息支撑，先尝试工具调用。",
                 confidence=0.65,
-                should_call_tool=True,
+                should_call_tool=bool(structured_calls),
                 should_continue=True,
                 tool_hint=tool_hint,
+                tool_calls=structured_calls,
                 metadata={"mode": "heuristic_tool", "prompt_chars": len(request.prompt)},
             )
 
@@ -301,15 +306,20 @@ class OpenAICompatibleModelClient:
                     error=None,
                     endpoint_index=endpoint_index,
                 )
-                tool_hint = self._heuristic._guess_tool_hint(request.user_message)
+                structured = self._parse_structured_model_output(text)
+                response_text = structured["response"] if structured is not None else text
+                tool_calls = structured["tool_calls"] if structured is not None else []
+                continue_flag = bool(structured["continue"]) if structured is not None else False
+                tool_hint = tool_calls[0].name if tool_calls else self._heuristic._guess_tool_hint(request.user_message)
                 return ModelOutput(
-                    text=text,
+                    text=response_text,
                     confidence=0.9,
-                    should_call_tool=False,
-                    should_continue=False,
+                    should_call_tool=bool(tool_calls),
+                    should_continue=continue_flag or bool(tool_calls),
                     tool_hint=tool_hint,
+                    tool_calls=tool_calls,
                     metadata={
-                        "mode": "external_api",
+                        "mode": "external_api_structured" if structured is not None else "external_api",
                         "provider": resolved["provider"],
                         "model": resolved["model"],
                         "latency_ms": latency_ms,
@@ -513,6 +523,52 @@ class OpenAICompatibleModelClient:
         if base.endswith("/v1"):
             return f"{base}/responses"
         return f"{base}/v1/responses"
+
+    def _parse_structured_model_output(self, text: str) -> dict[str, Any] | None:
+        candidates = self._json_candidates(text)
+        for candidate in candidates:
+            try:
+                payload = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            tool_calls = self._parse_tool_calls(payload.get("tool_calls"))
+            response = str(payload.get("response") or payload.get("answer") or payload.get("text") or "").strip()
+            if not response and not tool_calls:
+                continue
+            return {
+                "response": response or "已生成工具调用计划。",
+                "tool_calls": tool_calls,
+                "continue": bool(payload.get("continue", False)),
+            }
+        return None
+
+    def _json_candidates(self, text: str) -> list[str]:
+        candidates = [text.strip()]
+        fence_matches = re.findall(r"```json\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+        candidates.extend(match.strip() for match in fence_matches if match.strip())
+        return [item for item in candidates if item]
+
+    def _parse_tool_calls(self, payload: Any) -> list[ToolCall]:
+        if not isinstance(payload, list):
+            return []
+        calls: list[ToolCall] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("tool") or "").strip()
+            args = item.get("args")
+            if not name or not isinstance(args, dict):
+                continue
+            calls.append(
+                ToolCall(
+                    name=name,
+                    args=args,
+                    reason=str(item.get("reason") or "model_structured_tool_call"),
+                )
+            )
+        return calls
 
     def _extract_responses_text(self, payload: dict[str, Any]) -> str:
         output_text = payload.get("output_text")

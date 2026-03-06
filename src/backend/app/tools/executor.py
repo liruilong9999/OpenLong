@@ -53,7 +53,7 @@ class ToolExecutor:
         if not allowed:
             result = ToolResult(success=False, content=deny_reason or "tool blocked")
             latency_ms = round((perf_counter() - started) * 1000, 3)
-            self._record(
+            record = self._record(
                 tool_name=tool_name,
                 session_id=session_id,
                 agent_id=agent_id,
@@ -63,6 +63,7 @@ class ToolExecutor:
                 latency_ms=latency_ms,
                 denied_reason=deny_reason,
             )
+            self._attach_trace(result, record)
             self._emit("tool.execution.denied", tool_name, session_id, agent_id, result.success, deny_reason, latency_ms)
             return result
 
@@ -70,7 +71,7 @@ class ToolExecutor:
         if tool is None:
             result = ToolResult(success=False, content=f"tool not found: {tool_name}")
             latency_ms = round((perf_counter() - started) * 1000, 3)
-            self._record(
+            record = self._record(
                 tool_name=tool_name,
                 session_id=session_id,
                 agent_id=agent_id,
@@ -80,6 +81,7 @@ class ToolExecutor:
                 latency_ms=latency_ms,
                 denied_reason=None,
             )
+            self._attach_trace(result, record)
             self._emit("tool.execution.completed", tool_name, session_id, agent_id, result.success, None, latency_ms)
             return result
 
@@ -87,7 +89,7 @@ class ToolExecutor:
         if not valid:
             result = ToolResult(success=False, content=validation_reason or "invalid tool arguments")
             latency_ms = round((perf_counter() - started) * 1000, 3)
-            self._record(
+            record = self._record(
                 tool_name=tool_name,
                 session_id=session_id,
                 agent_id=agent_id,
@@ -97,6 +99,7 @@ class ToolExecutor:
                 latency_ms=latency_ms,
                 denied_reason=validation_reason,
             )
+            self._attach_trace(result, record)
             self._emit("tool.execution.denied", tool_name, session_id, agent_id, result.success, validation_reason, latency_ms)
             return result
 
@@ -104,7 +107,7 @@ class ToolExecutor:
         if not sandbox_ok:
             result = ToolResult(success=False, content=sandbox_reason or "tool blocked by sandbox")
             latency_ms = round((perf_counter() - started) * 1000, 3)
-            self._record(
+            record = self._record(
                 tool_name=tool_name,
                 session_id=session_id,
                 agent_id=agent_id,
@@ -114,12 +117,13 @@ class ToolExecutor:
                 latency_ms=latency_ms,
                 denied_reason=sandbox_reason,
             )
+            self._attach_trace(result, record)
             self._emit("tool.execution.denied", tool_name, session_id, agent_id, result.success, sandbox_reason, latency_ms)
             return result
 
         result = await tool.run(**safe_kwargs)
         latency_ms = round((perf_counter() - started) * 1000, 3)
-        self._record(
+        record = self._record(
             tool_name=tool_name,
             session_id=session_id,
             agent_id=agent_id,
@@ -129,8 +133,22 @@ class ToolExecutor:
             latency_ms=latency_ms,
             denied_reason=None,
         )
+        self._attach_trace(result, record)
         self._emit("tool.execution.completed", tool_name, session_id, agent_id, result.success, None, latency_ms)
         return result
+
+    def prompt_tool_catalog(self) -> list[dict[str, Any]]:
+        specs = self._registry.list_specs()
+        allowed_tools = set(self.permission_snapshot()["allowlist"])
+        confirmation_required = set(self.permission_snapshot()["confirmation_required"])
+        items: list[dict[str, Any]] = []
+        for spec in specs:
+            if allowed_tools and spec.name not in allowed_tools:
+                continue
+            payload = spec.to_dict()
+            payload["requires_confirmation"] = spec.name in confirmation_required
+            items.append(payload)
+        return items
 
     def recent_logs(self, limit: int = 100, tool_name: str | None = None) -> list[dict[str, Any]]:
         return self._log_store.recent(limit=limit, tool_name=tool_name)
@@ -182,7 +200,7 @@ class ToolExecutor:
         result: ToolResult,
         latency_ms: float,
         denied_reason: str | None,
-    ) -> None:
+    ) -> ToolExecutionRecord:
         record = ToolExecutionRecord.create(
             tool_name=tool_name,
             session_id=session_id,
@@ -195,6 +213,10 @@ class ToolExecutor:
             denied_reason=denied_reason,
         )
         self._log_store.append(record)
+        return record
+
+    def _attach_trace(self, result: ToolResult, record: ToolExecutionRecord) -> None:
+        result.data = {**result.data, "trace": record.to_dict()}
 
     def _emit(
         self,

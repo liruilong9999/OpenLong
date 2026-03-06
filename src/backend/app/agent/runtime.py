@@ -41,6 +41,7 @@ class AgentRuntime:
         self._memory_manager = memory_manager
         self._skill_loader = skill_loader
         self._model_router = model_router
+        self._tool_executor = tool_executor
 
         self._planner = Planner(max_iterations=3)
         self._prompt_builder = PromptBuilder()
@@ -160,6 +161,7 @@ class AgentRuntime:
                 if self._model_router is not None
                 else None
             )
+            tool_catalog = self._tool_executor.prompt_tool_catalog()
 
             loop_result = await self._loop.run(
                 agent=agent,
@@ -173,6 +175,7 @@ class AgentRuntime:
                 skills=skills,
                 matched_skills=matched_skills,
                 task_id=task.task_id,
+                available_tools=tool_catalog,
                 model_routes=route_payload["endpoints"],
                 model_route_source=route_payload["source"],
                 attempt_observer=observer,

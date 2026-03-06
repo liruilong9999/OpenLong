@@ -62,6 +62,7 @@ class AgentLoop:
         skills: list[SkillSpec],
         matched_skills: list[SkillSpec],
         task_id: str,
+        available_tools: list[dict[str, Any]] | None = None,
         model_routes: list[dict[str, Any]] | None = None,
         model_route_source: str = "default",
         attempt_observer: Any = None,
@@ -79,6 +80,7 @@ class AgentLoop:
                 skills=skills,
                 matched_skills=matched_skills,
                 user_message=user_message,
+                available_tools=available_tools or [],
                 attachments=attachments or [],
                 scratchpad="\n".join(scratchpad_lines),
             )

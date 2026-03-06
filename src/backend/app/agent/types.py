@@ -44,6 +44,7 @@ class ModelOutput:
     should_call_tool: bool = False
     should_continue: bool = False
     tool_hint: str | None = None
+    tool_calls: list["ToolCall"] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -53,6 +54,13 @@ class ToolCall:
     args: dict[str, Any] = field(default_factory=dict)
     reason: str = ""
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "args": dict(self.args),
+            "reason": self.reason,
+        }
+
 
 @dataclass(slots=True)
 class ToolCallTrace:
@@ -60,6 +68,15 @@ class ToolCallTrace:
     success: bool
     content: str
     data: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "call": self.call.to_dict(),
+            "success": self.success,
+            "content": self.content,
+            "trace": dict(self.data.get("trace") or {}),
+            "data": dict(self.data),
+        }
 
 
 @dataclass(slots=True)

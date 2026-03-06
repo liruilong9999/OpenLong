@@ -11,6 +11,7 @@ class PromptBundle:
     context_block: str
     memory_block: str
     skill_block: str
+    tool_block: str
     history_block: str
     attachment_block: str
     scratchpad_block: str
@@ -27,6 +28,7 @@ class PromptBuilder:
         skills: list[SkillSpec],
         matched_skills: list[SkillSpec],
         user_message: str,
+        available_tools: list[dict[str, object]] | None = None,
         attachments: list[dict[str, object]] | None = None,
         scratchpad: str = "",
     ) -> PromptBundle:
@@ -40,6 +42,7 @@ class PromptBuilder:
         memory_section = memory_text or "- none"
         available_section = available_skills or "- none"
         matched_section = matched_skill_block or "- none"
+        tool_section = self._tool_text(available_tools or [])
         history_section = history_text or "- none"
         attachment_section = self._attachment_text(attachments or [])
         scratchpad_section = scratchpad or "- none"
@@ -49,10 +52,16 @@ class PromptBuilder:
             "[SYSTEM]\n"
             "你是一个可调用工具的 Agent。请根据上下文、记忆、技能和历史消息完成任务。\n"
             "优先参考技能匹配结果及其使用约束。\n\n"
+            "如果需要调用工具，请优先返回结构化 JSON，而不是口头描述工具动作。\n"
+            "结构化响应格式如下：\n"
+            '{"response":"给用户的简短说明","tool_calls":[{"name":"file","args":{"action":"read","path":"README.md"},"reason":"需要读取文件"}],"continue":true}\n'
+            "当不需要工具时，也应尽量返回：\n"
+            '{"response":"最终答复","tool_calls":[],"continue":false}\n\n'
             f"[CONTEXT]\n{context_section}\n\n"
             f"[MEMORY]\n{memory_section}\n\n"
             f"[MATCHED_SKILLS]\n{matched_section}\n\n"
             f"[AVAILABLE_SKILLS]\n{available_section}\n\n"
+            f"[TOOLS]\n{tool_section}\n\n"
             f"[HISTORY]\n{history_section}\n\n"
             f"[ATTACHMENTS]\n{attachment_section}\n\n"
             f"[SCRATCHPAD]\n{scratchpad_section}\n\n"
@@ -63,12 +72,29 @@ class PromptBuilder:
             context_block=context_section,
             memory_block=memory_section,
             skill_block=available_section,
+            tool_block=tool_section,
             history_block=history_section,
             attachment_block=attachment_section,
             scratchpad_block=scratchpad_section,
             user_block=user_section,
             full_prompt=full_prompt,
         )
+
+    def _tool_text(self, available_tools: list[dict[str, object]]) -> str:
+        if not available_tools:
+            return "- none"
+
+        lines: list[str] = []
+        for item in available_tools:
+            params = item.get("parameters") or []
+            params_text = "; ".join(
+                f"{param.get('name')}({param.get('param_type')},{'required' if param.get('required') else 'optional'})"
+                for param in params
+            ) or "(none)"
+            lines.append(
+                f"- {item.get('name')}: {item.get('description') or ''} | params: {params_text} | returns: {item.get('returns') or 'text'}"
+            )
+        return "\n".join(lines)
 
     def _attachment_text(self, attachments: list[dict[str, object]]) -> str:
         if not attachments:
