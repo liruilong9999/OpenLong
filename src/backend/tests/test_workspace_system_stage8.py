@@ -1,5 +1,6 @@
 ﻿import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,17 @@ from app.tools.registry import ToolRegistry
 from app.workspace.manager import WorkspaceManager
 
 
+def _settings(tmp_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        model_provider="OpenAI",
+        openai_base_url="",
+        openai_model="gpt-5.3",
+        openai_api_key="",
+        openai_reasoning_effort="medium",
+        workspace_root=str(tmp_path),
+    )
+
+
 def _build_runtime(tmp_path: Path) -> AgentRuntime:
     workspace_manager = WorkspaceManager(str(tmp_path))
     memory_manager = MemoryManager(workspace_manager)
@@ -20,7 +32,13 @@ def _build_runtime(tmp_path: Path) -> AgentRuntime:
     registry = ToolRegistry()
     registry.register(FileTool(workspace_manager))
     tool_executor = ToolExecutor(registry)
-    return AgentRuntime(workspace_manager, memory_manager, skill_loader, tool_executor)
+    return AgentRuntime.from_settings(
+        settings=_settings(tmp_path),
+        workspace_manager=workspace_manager,
+        memory_manager=memory_manager,
+        skill_loader=skill_loader,
+        tool_executor=tool_executor,
+    )
 
 
 def test_workspace_structure_and_templates(tmp_path: Path) -> None:

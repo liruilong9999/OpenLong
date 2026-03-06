@@ -2,9 +2,13 @@
 
 from dataclasses import dataclass, field
 import re
-from typing import Protocol
+from time import perf_counter
+from typing import Any, Protocol
+
+import httpx
 
 from app.agent.types import ModelOutput
+from app.core.config import Settings
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s]+", flags=re.IGNORECASE)
@@ -27,8 +31,29 @@ class ModelClient(Protocol):
 
 class HeuristicModelClient:
     async def generate(self, request: ModelRequest) -> ModelOutput:
-        lower = request.user_message.lower()
-        tool_hint = self._guess_tool_hint(request.user_message)
+        user_message = request.user_message
+        lower = user_message.lower()
+        prompt = request.prompt
+        tool_hint = self._guess_tool_hint(user_message)
+
+        if self._is_follow_up_success_query(lower) and self._prompt_contains_success(prompt):
+            return ModelOutput(
+                text="已经创建好了，上一轮工具执行成功。",
+                confidence=0.88,
+                should_call_tool=False,
+                should_continue=False,
+                metadata={"mode": "memory_follow_up"},
+            )
+
+        remembered_time = self._extract_previous_availability(prompt)
+        if remembered_time and any(token in user_message for token in ["记得", "有空", "什么时候"]):
+            return ModelOutput(
+                text=f"你前面提到你平时有空的时间是：{remembered_time}。",
+                confidence=0.82,
+                should_call_tool=False,
+                should_continue=False,
+                metadata={"mode": "memory_recall"},
+            )
 
         if request.tool_summaries:
             return ModelOutput(
@@ -39,7 +64,7 @@ class HeuristicModelClient:
                 metadata={"mode": "post_tool", "prompt_chars": len(request.prompt)},
             )
 
-        if request.user_message.startswith("/tool "):
+        if user_message.startswith("/tool "):
             return ModelOutput(
                 text="检测到显式工具命令，准备执行工具。",
                 confidence=0.9,
@@ -49,7 +74,7 @@ class HeuristicModelClient:
                 metadata={"mode": "explicit_tool", "prompt_chars": len(request.prompt)},
             )
 
-        if request.user_message.startswith("/think") and request.iteration == 0:
+        if user_message.startswith("/think") and request.iteration == 0:
             return ModelOutput(
                 text="继续思考中，将在下一轮给出结论。",
                 confidence=0.7,
@@ -89,7 +114,11 @@ class HeuristicModelClient:
         if user_message.startswith("/shell"):
             return "shell"
 
-        if any(token in lower for token in ["文件", "read", "write", "path", "目录", "保存"]):
+        if any(token in user_message for token in ["工作目录", "当前目录", "工作区", "workspace"]):
+            return "workspace"
+        if any(token in user_message for token in ["几点", "时间", "当前时间"]):
+            return "time"
+        if any(token in lower for token in ["文件", "read", "write", "path", "目录", "保存", "创建文件", "文件夹"]):
             return "file"
         if any(token in lower for token in ["网址", "http", "api", "网页", "抓取", "请求"]):
             return "http"
@@ -97,3 +126,153 @@ class HeuristicModelClient:
             return "shell"
 
         return None
+
+    def _is_follow_up_success_query(self, lower: str) -> bool:
+        return any(token in lower for token in ["创建好了吗", "成功了吗", "弄好了吗", "完成了吗"])
+
+    def _prompt_contains_success(self, prompt: str) -> bool:
+        return any(token in prompt for token in ["written:", "created dir:", "success=True"])
+
+    def _extract_previous_availability(self, prompt: str) -> str | None:
+        match = re.search(r"晚上一个小时", prompt)
+        if match:
+            return match.group(0)
+        return None
+
+
+class OpenAICompatibleModelClient:
+    def __init__(
+        self,
+        *,
+        provider: str,
+        base_url: str,
+        model: str,
+        api_key: str,
+        reasoning_effort: str = "medium",
+        timeout: float = 60.0,
+        fallback: ModelClient | None = None,
+    ) -> None:
+        self._provider = provider or "OpenAI"
+        self._base_url = base_url.strip()
+        self._model = model.strip()
+        self._api_key = api_key.strip()
+        self._reasoning_effort = reasoning_effort.strip()
+        self._timeout = timeout
+        self._fallback = fallback or HeuristicModelClient()
+        self._heuristic = HeuristicModelClient()
+
+    @classmethod
+    def from_settings(cls, settings: Settings, fallback: ModelClient | None = None) -> "OpenAICompatibleModelClient":
+        return cls(
+            provider=settings.model_provider or "OpenAI",
+            base_url=settings.openai_base_url,
+            model=settings.openai_model,
+            api_key=settings.openai_api_key,
+            reasoning_effort=settings.openai_reasoning_effort,
+            fallback=fallback,
+        )
+
+    async def generate(self, request: ModelRequest) -> ModelOutput:
+        if not self._base_url or not self._model or not self._api_key:
+            fallback_output = await self._fallback.generate(request)
+            fallback_output.metadata = {**fallback_output.metadata, "mode": "missing_model_config"}
+            return fallback_output
+
+        started = perf_counter()
+        try:
+            text = await self._responses_api(request.prompt)
+            tool_hint = self._heuristic._guess_tool_hint(request.user_message)
+            return ModelOutput(
+                text=text,
+                confidence=0.9,
+                should_call_tool=False,
+                should_continue=False,
+                tool_hint=tool_hint,
+                metadata={
+                    "mode": "external_api",
+                    "provider": self._provider,
+                    "model": self._model,
+                    "latency_ms": round((perf_counter() - started) * 1000, 3),
+                },
+            )
+        except Exception as exc:
+            fallback_output = await self._fallback.generate(request)
+            fallback_output.metadata = {
+                **fallback_output.metadata,
+                "mode": "external_api_fallback",
+                "provider": self._provider,
+                "model": self._model,
+                "error": str(exc),
+            }
+            return fallback_output
+
+    async def _responses_api(self, prompt: str) -> str:
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self._model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "You are OpenLong, an agent system. Follow the provided prompt exactly. Unless the user explicitly requests another language, always answer in Simplified Chinese.",
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": prompt,
+                        }
+                    ],
+                },
+            ],
+        }
+        if self._reasoning_effort:
+            payload["reasoning"] = {"effort": self._reasoning_effort}
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(self._responses_endpoint(), headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            content = self._extract_responses_text(data)
+            if content:
+                return content
+            raise RuntimeError(f"empty responses payload: {data}")
+
+    def _responses_endpoint(self) -> str:
+        base = self._base_url.rstrip("/")
+        if base.endswith("/v1"):
+            return f"{base}/responses"
+        return f"{base}/v1/responses"
+
+    def _extract_responses_text(self, payload: dict[str, Any]) -> str:
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        output = payload.get("output")
+        if isinstance(output, list):
+            parts: list[str] = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if not isinstance(content, list):
+                    continue
+                for entry in content:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("type") in {"output_text", "text"} and isinstance(entry.get("text"), str):
+                        parts.append(entry["text"].strip())
+            if parts:
+                return "\n".join(part for part in parts if part)
+
+        return ""
+

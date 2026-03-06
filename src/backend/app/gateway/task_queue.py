@@ -65,7 +65,8 @@ class _TaskEnvelope:
 
 class TaskQueue:
     def __init__(self, event_bus: EventBus | None = None) -> None:
-        self._queue: asyncio.Queue[_TaskEnvelope] = asyncio.Queue()
+        self._queue: asyncio.Queue[_TaskEnvelope] | None = None
+        self._queue_loop: asyncio.AbstractEventLoop | None = None
         self._records: dict[str, TaskRecord] = {}
         self._futures: dict[str, asyncio.Future[Any]] = {}
         self._worker_task: asyncio.Task[None] | None = None
@@ -75,11 +76,20 @@ class TaskQueue:
         if self._event_bus is not None:
             self._event_bus.emit(name, payload)
 
-    def _ensure_worker(self) -> None:
+    def _ensure_runtime_objects(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue[_TaskEnvelope]:
+        if self._queue is None or self._queue_loop is not loop:
+            self._queue = asyncio.Queue()
+            self._queue_loop = loop
+            self._worker_task = None
+        return self._queue
+
+    def _ensure_worker(self, loop: asyncio.AbstractEventLoop) -> None:
+        queue = self._ensure_runtime_objects(loop)
+        del queue
         if self._worker_task is not None and not self._worker_task.done():
             return
 
-        self._worker_task = asyncio.create_task(self._worker_loop(), name="gateway-task-worker")
+        self._worker_task = loop.create_task(self._worker_loop(loop), name="gateway-task-worker")
 
     async def submit(
         self,
@@ -89,14 +99,15 @@ class TaskQueue:
         task_factory: Any,
     ) -> str:
         loop = asyncio.get_running_loop()
+        queue = self._ensure_runtime_objects(loop)
         task_id = str(uuid4())
         record = TaskRecord(task_id=task_id, kind=kind, name=name, payload=payload)
         future: asyncio.Future[Any] = loop.create_future()
 
         self._records[task_id] = record
         self._futures[task_id] = future
-        await self._queue.put(_TaskEnvelope(record=record, task_factory=task_factory, future=future))
-        self._ensure_worker()
+        await queue.put(_TaskEnvelope(record=record, task_factory=task_factory, future=future))
+        self._ensure_worker(loop)
 
         self._emit(
             "task.submitted",
@@ -126,9 +137,10 @@ class TaskQueue:
         result = await self.wait(task_id, timeout=timeout)
         return task_id, result
 
-    async def _worker_loop(self) -> None:
+    async def _worker_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        queue = self._ensure_runtime_objects(loop)
         while True:
-            envelope = await self._queue.get()
+            envelope = await queue.get()
             record = envelope.record
             started = perf_counter()
             record.status = TaskStatus.RUNNING
@@ -175,7 +187,7 @@ class TaskQueue:
             finally:
                 record.finished_at = _utc_now()
                 record.latency_ms = round((perf_counter() - started) * 1000, 3)
-                self._queue.task_done()
+                queue.task_done()
 
     def list_tasks(self, limit: int = 100, kind: TaskKind | None = None) -> list[dict[str, Any]]:
         records = list(self._records.values())
@@ -187,11 +199,12 @@ class TaskQueue:
 
     def stats(self) -> dict[str, int]:
         records = list(self._records.values())
+        queue_size = self._queue.qsize() if self._queue is not None else 0
         return {
             "total": len(records),
             "pending": sum(1 for item in records if item.status == TaskStatus.PENDING),
             "running": sum(1 for item in records if item.status == TaskStatus.RUNNING),
             "success": sum(1 for item in records if item.status == TaskStatus.SUCCESS),
             "failed": sum(1 for item in records if item.status == TaskStatus.FAILED),
-            "queue_size": self._queue.qsize(),
+            "queue_size": queue_size,
         }

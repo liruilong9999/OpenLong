@@ -76,7 +76,7 @@ class Settings(BaseSettings):
 
     workspace_root: str = Field(default="workspace")
     tool_shell_enabled: bool = Field(default=False)
-    tool_allowlist: str = Field(default="file,http,shell")
+    tool_allowlist: str = Field(default="file,http,shell,workspace,time")
     tool_denylist: str = Field(default="")
     tool_confirmation_required: str = Field(default="shell")
     tool_log_limit: int = Field(default=5000)
@@ -160,3 +160,5 @@ def _hydrate_from_key_file(settings: Settings) -> Settings:
 def load_settings() -> Settings:
     settings = Settings()
     return _hydrate_from_key_file(settings)
+
+

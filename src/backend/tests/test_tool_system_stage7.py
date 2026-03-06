@@ -9,6 +9,8 @@ from app.tools.registry import ToolRegistry
 from app.tools.builtins.file_tool import FileTool
 from app.tools.builtins.http_tool import HttpTool
 from app.tools.builtins.shell_tool import ShellTool
+from app.tools.builtins.time_tool import TimeTool
+from app.tools.builtins.workspace_tool import WorkspaceTool
 from app.workspace.manager import WorkspaceManager
 
 
@@ -18,8 +20,10 @@ def _build_executor(tmp_path: Path) -> ToolExecutor:
     registry.register(FileTool(workspace_manager))
     registry.register(HttpTool())
     registry.register(ShellTool(enabled=True))
+    registry.register(TimeTool())
+    registry.register(WorkspaceTool(workspace_manager))
     permission_manager = ToolPermissionManager(
-        allowlist={"file", "http", "shell"},
+        allowlist={"file", "http", "shell", "time", "workspace"},
         denylist=set(),
         confirmation_required={"shell"},
     )
@@ -30,9 +34,14 @@ def test_tool_registry_and_specs(tmp_path: Path) -> None:
     executor = _build_executor(tmp_path)
     snapshot = executor._registry.snapshot()
 
-    assert snapshot["count"] == 3
-    assert {item["name"] for item in snapshot["tools"]} == {"file", "http", "shell"}
-    assert any(param["name"] == "path" for item in snapshot["tools"] if item["name"] == "file" for param in item["parameters"])
+    assert snapshot["count"] >= 5
+    assert {item["name"] for item in snapshot["tools"]} == {"file", "http", "shell", "time", "workspace"}
+    assert any(
+        param["name"] == "path"
+        for item in snapshot["tools"]
+        if item["name"] == "file"
+        for param in item["parameters"]
+    )
 
 
 def test_tool_executor_permissions_and_sandbox(tmp_path: Path) -> None:
@@ -74,7 +83,7 @@ def test_tool_debug_api_and_logs() -> None:
     tools_resp = client.get("/tools")
     assert tools_resp.status_code == 200
     tools_payload = tools_resp.json()
-    assert tools_payload["count"] >= 3
+    assert tools_payload["count"] >= 5
     assert "permissions" in tools_payload
 
     write_resp = client.post(

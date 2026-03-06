@@ -1,4 +1,5 @@
 ﻿from pathlib import Path
+from types import SimpleNamespace
 
 from app.agent.planner import Planner
 from app.agent.prompt_builder import PromptBuilder
@@ -13,6 +14,17 @@ from app.tools.registry import ToolRegistry
 from app.workspace.manager import WorkspaceManager
 
 
+def _settings(tmp_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        model_provider="OpenAI",
+        openai_base_url="",
+        openai_model="gpt-5.3",
+        openai_api_key="",
+        openai_reasoning_effort="medium",
+        workspace_root=str(tmp_path),
+    )
+
+
 def _build_runtime(tmp_path: Path) -> AgentRuntime:
     workspace_manager = WorkspaceManager(str(tmp_path))
     memory_manager = MemoryManager(workspace_manager)
@@ -22,7 +34,8 @@ def _build_runtime(tmp_path: Path) -> AgentRuntime:
     registry.register(FileTool(workspace_manager))
     tool_executor = ToolExecutor(registry)
 
-    return AgentRuntime(
+    return AgentRuntime.from_settings(
+        settings=_settings(tmp_path),
         workspace_manager=workspace_manager,
         memory_manager=memory_manager,
         skill_loader=skill_loader,
@@ -41,7 +54,6 @@ def test_agent_object_and_loop_with_tool_write(tmp_path: Path) -> None:
         history=history,
     )
 
-    # run_turn is async, execute in a minimal event loop.
     import asyncio
 
     turn = asyncio.run(result)

@@ -23,9 +23,10 @@ class MemoryCompressor:
 
         ordered = sorted(entries, key=lambda item: item.timestamp)
         removed = 0
+        recent_keep = min(max(keep_recent, 0), max(max_entries, 0), len(ordered))
 
         if len(ordered) > max_entries:
-            protected = ordered[-keep_recent:]
+            protected = ordered[-recent_keep:] if recent_keep > 0 else []
             protected_ids = {item.memory_id for item in protected}
             pool = [item for item in ordered if item.memory_id not in protected_ids]
 
@@ -39,7 +40,7 @@ class MemoryCompressor:
         total_chars = sum(len(item.content) for item in ordered)
         if total_chars > max_total_chars:
             scored = sorted(ordered, key=lambda item: self._retention_score(item))
-            keep_ids = {item.memory_id for item in ordered[-keep_recent:]}
+            keep_ids = {item.memory_id for item in ordered[-recent_keep:]} if recent_keep > 0 else set()
 
             while total_chars > max_total_chars and scored:
                 candidate = scored.pop(0)

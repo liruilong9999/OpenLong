@@ -1,8 +1,15 @@
-﻿import { useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 
 function ChatPanel({ messages, onSend }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const logRef = useRef(null);
+
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [messages]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -23,7 +30,7 @@ function ChatPanel({ messages, onSend }) {
   return (
     <section className="card">
       <h2>Chat</h2>
-      <div className="chat-log">
+      <div className="chat-log" ref={logRef}>
         {messages.length === 0 && <p className="hint">No messages yet.</p>}
         {messages.map((item, index) => (
           <p key={`${item.role}-${index}`} className={`message ${item.role}`}>

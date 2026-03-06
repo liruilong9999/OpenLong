@@ -5,11 +5,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.agent.loop import AgentLoop
-from app.agent.model_client import HeuristicModelClient
+from app.agent.model_client import HeuristicModelClient, ModelClient, OpenAICompatibleModelClient
 from app.agent.planner import Planner
 from app.agent.prompt_builder import PromptBuilder
 from app.agent.response_generator import ResponseGenerator
 from app.agent.types import Agent, AgentTask, AgentTaskStatus, AgentTurnResult
+from app.core.config import Settings
 from app.memory.manager import MemoryManager
 from app.models.message import ChatMessage
 from app.skills.loader import SkillLoader
@@ -29,6 +30,7 @@ class AgentRuntime:
         memory_manager: MemoryManager,
         skill_loader: SkillLoader,
         tool_executor: ToolExecutor,
+        model_client: ModelClient,
     ) -> None:
         self._workspace_manager = workspace_manager
         self._memory_manager = memory_manager
@@ -40,13 +42,34 @@ class AgentRuntime:
             tool_executor=tool_executor,
             prompt_builder=self._prompt_builder,
             planner=self._planner,
-            model_client=HeuristicModelClient(),
+            model_client=model_client,
             response_generator=ResponseGenerator(),
             max_iterations=3,
         )
 
         self._agents: dict[str, Agent] = {}
         self.get_or_create("main")
+
+    @classmethod
+    def from_settings(
+        cls,
+        settings: Settings,
+        workspace_manager: WorkspaceManager,
+        memory_manager: MemoryManager,
+        skill_loader: SkillLoader,
+        tool_executor: ToolExecutor,
+    ) -> "AgentRuntime":
+        model_client = OpenAICompatibleModelClient.from_settings(
+            settings,
+            fallback=HeuristicModelClient(),
+        )
+        return cls(
+            workspace_manager=workspace_manager,
+            memory_manager=memory_manager,
+            skill_loader=skill_loader,
+            tool_executor=tool_executor,
+            model_client=model_client,
+        )
 
     def exists(self, agent_id: str) -> bool:
         return agent_id in self._agents
@@ -142,9 +165,9 @@ class AgentRuntime:
                 model_outputs=[output.text for output in loop_result.model_outputs],
                 iterations=max(len(loop_result.plans), 1),
             )
-        except Exception as exc:
+        except Exception:
             task.status = AgentTaskStatus.FAILED
-            task.error = str(exc)
+            task.error = "agent runtime turn failed"
             task.finished_at = _utc_now()
             self._persist_agent_state(agent)
             raise

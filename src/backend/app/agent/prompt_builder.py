@@ -45,7 +45,7 @@ class PromptBuilder:
         full_prompt = (
             "[SYSTEM]\n"
             "你是一个可调用工具的 Agent。请根据上下文、记忆、技能和历史消息完成任务。\n"
-            "优先考虑匹配技能中的触发条件与参数要求。\n\n"
+            "优先参考技能匹配结果及其使用约束。\n\n"
             f"[CONTEXT]\n{context_section}\n\n"
             f"[MEMORY]\n{memory_section}\n\n"
             f"[MATCHED_SKILLS]\n{matched_section}\n\n"

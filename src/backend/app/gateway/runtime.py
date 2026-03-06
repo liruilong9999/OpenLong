@@ -25,6 +25,8 @@ from app.tools.sandbox import ToolSandbox
 from app.tools.builtins.file_tool import FileTool
 from app.tools.builtins.http_tool import HttpTool
 from app.tools.builtins.shell_tool import ShellTool
+from app.tools.builtins.time_tool import TimeTool
+from app.tools.builtins.workspace_tool import WorkspaceTool
 from app.workspace.manager import WorkspaceManager
 
 
@@ -48,7 +50,7 @@ class GatewayRuntime:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "GatewayRuntime":
-        # 统一创建各子系统实例，形成网关运行时依赖图。
+        # 缁熶竴鍒涘缓鍚勫瓙绯荤粺瀹炰緥锛屽舰鎴愮綉鍏宠繍琛屾椂渚濊禆鍥俱€?
         event_bus = EventBus()
         session_manager = SessionManager()
         websocket_hub = WebSocketHub()
@@ -60,6 +62,8 @@ class GatewayRuntime:
         tool_registry.register(FileTool(workspace_manager))
         tool_registry.register(HttpTool())
         tool_registry.register(ShellTool(enabled=settings.tool_shell_enabled))
+        tool_registry.register(TimeTool())
+        tool_registry.register(WorkspaceTool(workspace_manager))
         tool_permission_manager = ToolPermissionManager.from_csv(
             allowlist_csv=settings.tool_allowlist,
             denylist_csv=settings.tool_denylist,
@@ -74,7 +78,8 @@ class GatewayRuntime:
             log_store=tool_log_store,
         )
 
-        agent_runtime = AgentRuntime(
+        agent_runtime = AgentRuntime.from_settings(
+            settings=settings,
             workspace_manager=workspace_manager,
             memory_manager=memory_manager,
             skill_loader=skill_loader,
@@ -670,6 +675,11 @@ class GatewayRuntime:
                 "active": self.session_manager.active_count(),
             },
         }
+
+
+
+
+
 
 
 

@@ -17,6 +17,8 @@ from app.skills.loader import SkillLoader
 from app.tools.builtins.file_tool import FileTool
 from app.tools.builtins.http_tool import HttpTool
 from app.tools.builtins.shell_tool import ShellTool
+from app.tools.builtins.time_tool import TimeTool
+from app.tools.builtins.workspace_tool import WorkspaceTool
 from app.tools.executor import ToolExecutor
 from app.tools.logger import ToolExecutionLogStore
 from app.tools.permissions import ToolPermissionManager
@@ -31,12 +33,12 @@ def _build_runtime(tmp_path: Path) -> GatewayRuntime:
         environment="test",
         workspace_root=str(tmp_path / "workspace"),
         model_provider="OpenAI",
-        openai_base_url="https://example.test/v1",
+        openai_base_url="",
         openai_model="gpt-5.3",
         openai_reasoning_effort="medium",
-        openai_api_key="test-key",
+        openai_api_key="",
         tool_shell_enabled=False,
-        tool_allowlist="file,http,shell",
+        tool_allowlist="file,http,shell,time,workspace",
         tool_denylist="",
         tool_confirmation_required="shell",
         tool_log_limit=500,
@@ -53,6 +55,8 @@ def _build_runtime(tmp_path: Path) -> GatewayRuntime:
     tool_registry.register(FileTool(workspace_manager))
     tool_registry.register(HttpTool())
     tool_registry.register(ShellTool(enabled=settings.tool_shell_enabled))
+    tool_registry.register(TimeTool())
+    tool_registry.register(WorkspaceTool(workspace_manager))
     tool_executor = ToolExecutor(
         tool_registry,
         event_bus=event_bus,
@@ -65,7 +69,8 @@ def _build_runtime(tmp_path: Path) -> GatewayRuntime:
         log_store=ToolExecutionLogStore(max_records=settings.tool_log_limit),
     )
 
-    agent_runtime = AgentRuntime(
+    agent_runtime = AgentRuntime.from_settings(
+        settings=settings,
         workspace_manager=workspace_manager,
         memory_manager=memory_manager,
         skill_loader=skill_loader,
@@ -161,3 +166,39 @@ def test_full_system_integration_flow(tmp_path: Path) -> None:
     dashboard = runtime.dashboard_workspaces()
     assert dashboard["items"]
     assert dashboard["templates"]["templates"]
+
+
+def test_conversation_followups_and_time(tmp_path: Path) -> None:
+    runtime = _build_runtime(tmp_path)
+    runtime.create_workspace(agent_id="main", template_name="default", agent_type="general", overwrite=True)
+
+    first = asyncio.run(
+        runtime.handle_user_message(
+            session_id="follow-s1",
+            user_message="工作目录下创建文件夹test_temp",
+            preferred_agent_id="main",
+            source="test",
+        )
+    )
+    assert "created dir: test_temp" in first["reply"]
+
+    second = asyncio.run(
+        runtime.handle_user_message(
+            session_id="follow-s1",
+            user_message="创建好了吗？",
+            preferred_agent_id="main",
+            source="test",
+        )
+    )
+    assert "已经创建好了" in second["reply"]
+
+    third = asyncio.run(
+        runtime.handle_user_message(
+            session_id="follow-s2",
+            user_message="现在几点了",
+            preferred_agent_id="main",
+            source="test",
+        )
+    )
+    assert "工具执行完成" in third["reply"]
+    assert "time" in third["reply"]

@@ -17,3 +17,10 @@ src/frontend/.env
 # Local scratch dirs
 tmp_*/
 
+# Python local runtime
+src/backend/.venv/
+src/backend/.pytest_cache/
+
+# Frontend local runtime
+src/frontend/node_modules/
+src/frontend/dist/

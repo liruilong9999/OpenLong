@@ -48,6 +48,8 @@ class ToolSandbox:
             return self._validate_http(payload)
         if normalized == "file":
             return self._validate_file(payload)
+        if normalized in {"workspace", "time"}:
+            return True, None, payload
 
         return True, None, payload
 
@@ -92,7 +94,6 @@ class ToolSandbox:
             if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
                 return False, "private or local network targets are blocked", payload
         except ValueError:
-            # Non-IP hostname: allow by default.
             pass
 
         timeout = float(payload.get("timeout", 20.0))
@@ -113,7 +114,7 @@ class ToolSandbox:
             return False, "relative path traversal is blocked", payload
 
         action = str(payload.get("action", "read")).lower()
-        if action not in {"read", "write"}:
+        if action not in {"read", "write", "mkdir"}:
             return False, "unsupported file action", payload
 
         if action == "write":

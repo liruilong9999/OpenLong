@@ -5,6 +5,7 @@
   --text: #14202b;
   --muted: #4f6477;
   --accent: #0c7f73;
+  --system: #75521c;
 }
 
 * {
@@ -68,6 +69,15 @@ body {
 
 .message.assistant strong {
   color: var(--accent);
+}
+
+.message.system {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.message.system strong {
+  color: var(--system);
 }
 
 .chat-form {
