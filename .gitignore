@@ -1,0 +1,15 @@
+﻿# Python
+__pycache__/
+*.pyc
+
+# Local env and keys
+.env
+*.env
+src/backend/.env
+src/frontend/.env
+
+# Do not commit secret key file
+/doc/key.txt
+
+# Workspace runtime artifacts
+/workspace/

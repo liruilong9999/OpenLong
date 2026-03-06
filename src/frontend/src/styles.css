@@ -1,0 +1,105 @@
+﻿:root {
+  --bg: #f2f5f8;
+  --surface: #ffffff;
+  --line: #d7dde4;
+  --text: #14202b;
+  --muted: #4f6477;
+  --accent: #0c7f73;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(160deg, #f8fafc 0%, #edf3f8 100%);
+  color: var(--text);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.layout {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 28px;
+}
+
+.header p {
+  margin: 8px 0 24px;
+  color: var(--muted);
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  min-height: 220px;
+}
+
+.chat-log {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fbfdff;
+  min-height: 180px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.message {
+  margin: 0 0 8px;
+}
+
+.message.user strong {
+  color: #205095;
+}
+
+.message.assistant strong {
+  color: var(--accent);
+}
+
+.chat-form {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+}
+
+button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: #fff;
+  background: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+button[disabled] {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.hint {
+  color: var(--muted);
+}
