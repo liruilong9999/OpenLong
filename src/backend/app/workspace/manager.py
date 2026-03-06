@@ -1,6 +1,11 @@
 ﻿from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 from pathlib import Path
+import shutil
+from typing import Any
+from uuid import uuid4
 
 from app.context.manager import ContextManager
 
@@ -14,35 +19,376 @@ CONTEXT_DEFAULTS = {
     "MEMORY.md": "# MEMORY\nPersistent memory index for this agent.",
 }
 
+WORKSPACE_DIRECTORIES = [
+    "skills",
+    "memory/logs",
+    "memory/summaries",
+    "logs",
+    "channels",
+    "self_evolution",
+    "backups",
+]
+
+WORKSPACE_METADATA_FILE = "workspace.json"
+WORKSPACE_STATE_FILE = "state.json"
+WORKSPACE_EVENT_LOG = "logs/events.jsonl"
+WORKSPACE_EXPORT_DIR = "_exports"
+WORKSPACE_TEMPLATE_DIR = "_templates"
+
+SKILL_LAYOUT_README = """# Skills Directory Layout
+
+Each skill is a standalone folder:
+
+skills/
+  <skill_id>/
+    SKILL.md
+    script.py (optional)
+
+SKILL.md standard sections:
+- 技能说明
+- 触发条件
+- 参数说明
+- 示例
+"""
+
+WORKSPACE_TEMPLATES: dict[str, dict[str, Any]] = {
+    "default": {
+        "description": "Base agent workspace.",
+        "files": {},
+    },
+    "coding": {
+        "description": "Coding-oriented agent workspace.",
+        "files": {
+            "IDENTITY.md": "# IDENTITY\nYou are a coding agent focused on implementation, debugging, and delivery.",
+            "SOUL.md": "# SOUL\nBe pragmatic, direct, and precise when solving engineering tasks.",
+            "STYLE.md": "# STYLE\nPrefer concise technical replies with clear next actions.",
+        },
+    },
+    "research": {
+        "description": "Research-oriented agent workspace.",
+        "files": {
+            "IDENTITY.md": "# IDENTITY\nYou are a research agent focused on gathering, comparing, and summarizing evidence.",
+            "SOUL.md": "# SOUL\nBe careful with assumptions and surface tradeoffs explicitly.",
+            "STYLE.md": "# STYLE\nSummarize findings first, then add supporting detail.",
+        },
+    },
+}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
 
 class WorkspaceManager:
     def __init__(self, workspace_root: str) -> None:
         repo_root = Path(__file__).resolve().parents[4]
         self._workspace_root = (repo_root / workspace_root).resolve()
+        self._workspace_root.mkdir(parents=True, exist_ok=True)
+        (self._workspace_root / WORKSPACE_EXPORT_DIR).mkdir(parents=True, exist_ok=True)
+        (self._workspace_root / WORKSPACE_TEMPLATE_DIR).mkdir(parents=True, exist_ok=True)
+        self._context_manager = ContextManager()
 
-    def ensure_agent_workspace(self, agent_id: str) -> Path:
-        workspace = self._workspace_root / agent_id
+    @property
+    def workspace_root(self) -> Path:
+        return self._workspace_root
+
+    def workspace_exists(self, agent_id: str) -> bool:
+        return self._workspace_path(agent_id).exists()
+
+    def ensure_agent_workspace(
+        self,
+        agent_id: str,
+        template_name: str = "default",
+        agent_type: str = "general",
+    ) -> Path:
+        self.create_workspace(agent_id=agent_id, template_name=template_name, agent_type=agent_type)
+        return self._workspace_path(agent_id)
+
+    def create_workspace(
+        self,
+        *,
+        agent_id: str,
+        template_name: str = "default",
+        agent_type: str = "general",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        workspace = self._workspace_path(agent_id)
+        if overwrite and workspace.exists():
+            shutil.rmtree(workspace)
+            self._context_manager.invalidate(workspace)
+
         workspace.mkdir(parents=True, exist_ok=True)
-
-        # 预创建运行所需目录，包含未来的 channel 与自我迭代扩展位。
-        for relative_dir in [
-            "skills",
-            "memory/logs",
-            "memory/summaries",
-            "logs",
-            "channels",
-            "self_evolution",
-        ]:
+        for relative_dir in WORKSPACE_DIRECTORIES:
             (workspace / relative_dir).mkdir(parents=True, exist_ok=True)
 
-        # 初始化上下文文件，避免首次运行读取失败。
-        for filename, content in CONTEXT_DEFAULTS.items():
+        template = self._resolve_template(template_name)
+        files = dict(CONTEXT_DEFAULTS)
+        files.update(template["files"])
+
+        for filename, content in files.items():
             path = workspace / filename
-            if not path.exists():
-                path.write_text(content + "\n", encoding="utf-8")
+            if overwrite or not path.exists():
+                path.write_text(content.rstrip() + "\n", encoding="utf-8")
 
-        return workspace
+        skill_readme = workspace / "skills" / "README.md"
+        if overwrite or not skill_readme.exists():
+            skill_readme.write_text(SKILL_LAYOUT_README, encoding="utf-8")
 
-    def load_context_block(self, agent_id: str) -> str:
+        metadata = self._read_json(self._metadata_path(agent_id))
+        created_at = metadata.get("created_at") if metadata and not overwrite else _utc_now().isoformat()
+        metadata = {
+            "agent_id": agent_id,
+            "agent_type": agent_type,
+            "template_name": template_name,
+            "created_at": created_at,
+            "updated_at": _utc_now().isoformat(),
+            "directories": list(WORKSPACE_DIRECTORIES),
+            "files": sorted(files.keys()),
+            "version": 1,
+        }
+        self._write_json(self._metadata_path(agent_id), metadata)
+
+        state = self._read_json(self._state_path(agent_id))
+        if overwrite or not state:
+            state = {
+                "agent_id": agent_id,
+                "agent_type": agent_type,
+                "current_task": None,
+                "last_active_at": _utc_now().isoformat(),
+                "workspace_template": template_name,
+            }
+            self._write_json(self._state_path(agent_id), state)
+
+        event_log = workspace / WORKSPACE_EVENT_LOG
+        event_log.parent.mkdir(parents=True, exist_ok=True)
+        if overwrite or not event_log.exists():
+            event_log.write_text("", encoding="utf-8")
+
+        return self.load_workspace(agent_id=agent_id, create_if_missing=False)
+
+    def load_workspace(self, agent_id: str, create_if_missing: bool = True) -> dict[str, Any]:
+        workspace = self._workspace_path(agent_id)
+        if not workspace.exists():
+            if not create_if_missing:
+                return {
+                    "agent_id": agent_id,
+                    "exists": False,
+                    "path": str(workspace),
+                }
+            self.create_workspace(agent_id=agent_id)
+
+        metadata = self._read_json(self._metadata_path(agent_id))
+        state = self._read_json(self._state_path(agent_id))
+        files = sorted(path.name for path in workspace.iterdir() if path.is_file())
+        directories = sorted(path.name for path in workspace.iterdir() if path.is_dir())
+
+        return {
+            "agent_id": agent_id,
+            "exists": True,
+            "path": str(workspace),
+            "metadata": metadata,
+            "state": state,
+            "files": files,
+            "directories": directories,
+        }
+
+    def list_workspaces(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for path in sorted(self._workspace_root.iterdir(), key=lambda item: item.name):
+            if not path.is_dir():
+                continue
+            if path.name.startswith("_"):
+                continue
+            items.append(self.load_workspace(path.name, create_if_missing=False))
+        return items
+
+    def delete_workspace(self, agent_id: str, force: bool = False) -> dict[str, Any]:
+        if agent_id == "main" and not force:
+            return {"agent_id": agent_id, "deleted": False, "reason": "main workspace requires force"}
+
+        workspace = self._workspace_path(agent_id)
+        if not workspace.exists():
+            return {"agent_id": agent_id, "deleted": False, "reason": "workspace not found"}
+
+        shutil.rmtree(workspace)
+        self._context_manager.invalidate(workspace)
+        return {"agent_id": agent_id, "deleted": True}
+
+    def list_templates(self) -> dict[str, Any]:
+        return {
+            "templates": [
+                {"name": name, "description": template["description"]}
+                for name, template in sorted(WORKSPACE_TEMPLATES.items())
+            ]
+        }
+
+    def export_workspace(self, agent_id: str, export_dir: str | None = None) -> dict[str, Any]:
         workspace = self.ensure_agent_workspace(agent_id)
-        return ContextManager(workspace).build_context()
+        export_root = Path(export_dir).resolve() if export_dir else (self._workspace_root / WORKSPACE_EXPORT_DIR)
+        export_root.mkdir(parents=True, exist_ok=True)
+
+        archive_stem = export_root / f"{agent_id}-{_utc_now().strftime('%Y%m%d%H%M%S')}"
+        archive_path = shutil.make_archive(str(archive_stem), "zip", root_dir=str(workspace.parent), base_dir=workspace.name)
+        return {
+            "agent_id": agent_id,
+            "archive_path": archive_path,
+        }
+
+    def import_workspace(self, agent_id: str, archive_path: str, overwrite: bool = False) -> dict[str, Any]:
+        archive = Path(archive_path).resolve()
+        if not archive.exists():
+            raise FileNotFoundError(f"archive not found: {archive_path}")
+
+        target = self._workspace_path(agent_id)
+        if target.exists():
+            if not overwrite:
+                raise FileExistsError(f"workspace already exists: {agent_id}")
+            shutil.rmtree(target)
+
+        staging = self._workspace_root / WORKSPACE_EXPORT_DIR / f"restore-{uuid4().hex}"
+        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.unpack_archive(str(archive), str(staging))
+            candidates = [item for item in staging.iterdir() if item.is_dir()]
+            if not candidates:
+                raise FileNotFoundError("no workspace directory found in archive")
+            source = candidates[0]
+            shutil.move(str(source), str(target))
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+
+        self._rewrite_identity_files(agent_id)
+        self._context_manager.invalidate(target)
+        return self.load_workspace(agent_id=agent_id, create_if_missing=False)
+
+    def load_context_block(self, agent_id: str, force_refresh: bool = False) -> str:
+        workspace = self.ensure_agent_workspace(agent_id)
+        return self._context_manager.build_context(workspace, force_refresh=force_refresh)
+
+    def get_context_snapshot(self, agent_id: str, force_refresh: bool = False) -> dict[str, Any]:
+        workspace = self.ensure_agent_workspace(agent_id)
+        snapshot = self._context_manager.load(workspace, force_refresh=force_refresh)
+        return snapshot.to_dict()
+
+    def update_context(
+        self,
+        agent_id: str,
+        context_name: str,
+        content: str,
+        dynamic_only: bool = True,
+    ) -> dict[str, Any]:
+        workspace = self.ensure_agent_workspace(agent_id)
+        snapshot = self._context_manager.update_context(
+            workspace_path=workspace,
+            context_name=context_name,
+            content=content,
+            dynamic_only=dynamic_only,
+        )
+        self._touch_metadata(agent_id)
+        return snapshot.to_dict()
+
+    def context_cache_stats(self) -> dict[str, int]:
+        return self._context_manager.cache_stats()
+
+    def save_agent_state(self, agent_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        self.ensure_agent_workspace(agent_id)
+        current = self._read_json(self._state_path(agent_id))
+        current.update(state)
+        current["agent_id"] = agent_id
+        current["last_active_at"] = _utc_now().isoformat()
+        self._write_json(self._state_path(agent_id), current)
+        self._touch_metadata(agent_id)
+        return current
+
+    def load_agent_state(self, agent_id: str) -> dict[str, Any]:
+        self.ensure_agent_workspace(agent_id)
+        return self._read_json(self._state_path(agent_id))
+
+    def append_log(
+        self,
+        agent_id: str,
+        *,
+        event_name: str,
+        message: str,
+        session_id: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        workspace = self.ensure_agent_workspace(agent_id)
+        log_file = workspace / WORKSPACE_EVENT_LOG
+        record = {
+            "timestamp": _utc_now().isoformat(),
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "event_name": event_name,
+            "message": message,
+            "payload": payload or {},
+        }
+        with log_file.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return record
+
+    def recent_logs(self, agent_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        workspace = self.ensure_agent_workspace(agent_id)
+        log_file = workspace / WORKSPACE_EVENT_LOG
+        if not log_file.exists():
+            return []
+
+        rows: list[dict[str, Any]] = []
+        for line in log_file.read_text(encoding="utf-8").splitlines():
+            payload = line.strip()
+            if not payload:
+                continue
+            try:
+                rows.append(json.loads(payload))
+            except json.JSONDecodeError:
+                continue
+        return rows[-limit:][::-1]
+
+    def _workspace_path(self, agent_id: str) -> Path:
+        return self._workspace_root / agent_id
+
+    def _metadata_path(self, agent_id: str) -> Path:
+        return self._workspace_path(agent_id) / WORKSPACE_METADATA_FILE
+
+    def _state_path(self, agent_id: str) -> Path:
+        return self._workspace_path(agent_id) / WORKSPACE_STATE_FILE
+
+    def _resolve_template(self, template_name: str) -> dict[str, Any]:
+        template = WORKSPACE_TEMPLATES.get(template_name)
+        if template is None:
+            raise ValueError(f"workspace template not found: {template_name}")
+        return template
+
+    def _touch_metadata(self, agent_id: str) -> None:
+        metadata = self._read_json(self._metadata_path(agent_id))
+        if not metadata:
+            return
+        metadata["updated_at"] = _utc_now().isoformat()
+        self._write_json(self._metadata_path(agent_id), metadata)
+
+    def _rewrite_identity_files(self, agent_id: str) -> None:
+        metadata_path = self._metadata_path(agent_id)
+        state_path = self._state_path(agent_id)
+        metadata = self._read_json(metadata_path)
+        if metadata:
+            metadata["agent_id"] = agent_id
+            metadata["updated_at"] = _utc_now().isoformat()
+            self._write_json(metadata_path, metadata)
+        state = self._read_json(state_path)
+        if state:
+            state["agent_id"] = agent_id
+            state["last_active_at"] = _utc_now().isoformat()
+            self._write_json(state_path, state)
+
+    def _read_json(self, path: Path) -> dict[str, Any]:
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {}
+
+    def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

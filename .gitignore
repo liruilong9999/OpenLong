@@ -13,3 +13,7 @@ src/frontend/.env
 
 # Workspace runtime artifacts
 /workspace/
+
+# Local scratch dirs
+tmp_*/
+

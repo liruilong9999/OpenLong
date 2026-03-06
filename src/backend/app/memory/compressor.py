@@ -1,13 +1,60 @@
 ﻿from __future__ import annotations
 
-from pathlib import Path
+from datetime import datetime, timezone
+
+from app.memory.types import MemoryEntry
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class MemoryCompressor:
-    def compress(self, source_log: Path, summary_file: Path, max_lines: int = 30) -> None:
-        if not source_log.exists():
-            return
+    def compress(
+        self,
+        entries: list[MemoryEntry],
+        *,
+        max_entries: int = 1200,
+        max_total_chars: int = 300000,
+        keep_recent: int = 120,
+    ) -> tuple[list[MemoryEntry], int]:
+        if not entries:
+            return entries, 0
 
-        lines = source_log.read_text(encoding="utf-8").splitlines()[-max_lines:]
-        summary_file.parent.mkdir(parents=True, exist_ok=True)
-        summary_file.write_text("\n".join(lines), encoding="utf-8")
+        ordered = sorted(entries, key=lambda item: item.timestamp)
+        removed = 0
+
+        if len(ordered) > max_entries:
+            protected = ordered[-keep_recent:]
+            protected_ids = {item.memory_id for item in protected}
+            pool = [item for item in ordered if item.memory_id not in protected_ids]
+
+            pool.sort(key=lambda item: self._retention_score(item), reverse=True)
+            keep_needed = max(max_entries - len(protected), 0)
+            selected = pool[:keep_needed] + protected
+            selected.sort(key=lambda item: item.timestamp)
+            removed += len(ordered) - len(selected)
+            ordered = selected
+
+        total_chars = sum(len(item.content) for item in ordered)
+        if total_chars > max_total_chars:
+            scored = sorted(ordered, key=lambda item: self._retention_score(item))
+            keep_ids = {item.memory_id for item in ordered[-keep_recent:]}
+
+            while total_chars > max_total_chars and scored:
+                candidate = scored.pop(0)
+                if candidate.memory_id in keep_ids:
+                    continue
+                if candidate in ordered:
+                    ordered.remove(candidate)
+                    total_chars -= len(candidate.content)
+                    removed += 1
+
+        return ordered, removed
+
+    def _retention_score(self, entry: MemoryEntry) -> float:
+        now = _utc_now()
+        age_hours = max((now - entry.timestamp).total_seconds() / 3600.0, 0.0)
+        recency = max(0.0, 1.0 - age_hours / 1440.0)
+        access_bonus = min(entry.access_count, 25) / 50.0
+        return (entry.weight * 0.55) + (entry.importance * 0.25) + (recency * 0.15) + (access_bonus * 0.05)

@@ -1,14 +1,61 @@
 ﻿from __future__ import annotations
 
 from functools import lru_cache
+import os
 from pathlib import Path
 import re
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field
+
+try:
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+except ImportError:
+    SettingsConfigDict = dict
+
+    class BaseSettings(BaseModel):
+        def __init__(self, **data):
+            merged = _load_env_values(self.__class__)
+            merged.update(data)
+            super().__init__(**merged)
 
 
 _KEY_LINE = re.compile(r'^\s*"?([A-Za-z0-9_]+)"?\s*(=|:)\s*"?(.+?)"?\s*$')
+
+
+def _load_env_values(settings_cls: type[BaseModel]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    model_config = getattr(settings_cls, "model_config", {}) or {}
+
+    env_file = model_config.get("env_file")
+    env_encoding = model_config.get("env_file_encoding", "utf-8")
+    case_sensitive = bool(model_config.get("case_sensitive", False))
+
+    if env_file:
+        env_path = Path(env_file)
+        if env_path.exists():
+            for line in env_path.read_text(encoding=env_encoding).splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, raw_value = stripped.split("=", maxsplit=1)
+                env_key = key.strip()
+                env_value = raw_value.strip().strip('"')
+                values[env_key if case_sensitive else env_key.lower()] = env_value
+
+    for key, value in os.environ.items():
+        values[key if case_sensitive else key.lower()] = value
+
+    resolved: dict[str, str] = {}
+    annotations = getattr(settings_cls, "__annotations__", {})
+    for field_name in annotations:
+        field_lookup = field_name if case_sensitive else field_name.lower()
+        upper_lookup = field_name.upper() if not case_sensitive else field_name
+        if field_lookup in values:
+            resolved[field_name] = values[field_lookup]
+        elif upper_lookup in values:
+            resolved[field_name] = values[upper_lookup]
+
+    return resolved
 
 
 class Settings(BaseSettings):
@@ -29,6 +76,10 @@ class Settings(BaseSettings):
 
     workspace_root: str = Field(default="workspace")
     tool_shell_enabled: bool = Field(default=False)
+    tool_allowlist: str = Field(default="file,http,shell")
+    tool_denylist: str = Field(default="")
+    tool_confirmation_required: str = Field(default="shell")
+    tool_log_limit: int = Field(default=5000)
 
     model_config = SettingsConfigDict(
         env_file=".env",

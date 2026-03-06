@@ -3,19 +3,29 @@
 from pathlib import Path
 from typing import Any
 
-from app.tools.types import ToolResult
+from app.tools.types import ToolParameterSpec, ToolResult, ToolSpec
 from app.workspace.manager import WorkspaceManager
 
 
 class FileTool:
-    name = "file"
+    spec = ToolSpec(
+        name="file",
+        description="Read or write files inside the agent workspace.",
+        parameters=[
+            ToolParameterSpec(name="action", param_type="string", required=True, description="read or write"),
+            ToolParameterSpec(name="path", param_type="string", required=True, description="relative file path"),
+            ToolParameterSpec(name="content", param_type="string", required=False, description="content when action=write"),
+            ToolParameterSpec(name="agent_id", param_type="string", required=False, description="target agent workspace"),
+        ],
+        returns="file content or write status",
+    )
 
     def __init__(self, workspace_manager: WorkspaceManager) -> None:
         self._workspace_manager = workspace_manager
 
     async def run(self, **kwargs: Any) -> ToolResult:
         agent_id = str(kwargs.get("agent_id", "main"))
-        action = str(kwargs.get("action", "read"))
+        action = str(kwargs.get("action", "read")).lower()
         relative_path = str(kwargs.get("path", ""))
 
         if not relative_path:
@@ -28,7 +38,7 @@ class FileTool:
             return ToolResult(success=False, content="path escapes workspace")
 
         if action == "read":
-            if not target.exists():
+            if not target.exists() or not target.is_file():
                 return ToolResult(success=False, content="file not found")
             return ToolResult(success=True, content=target.read_text(encoding="utf-8"))
 

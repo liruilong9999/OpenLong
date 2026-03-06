@@ -1,27 +1,155 @@
 ﻿from __future__ import annotations
 
 from pathlib import Path
+from threading import Lock
+from typing import Any
 
-from app.skills.parser import Skill, SkillParser
+from app.skills.parser import SkillParser
+from app.skills.registry import SkillRegistry
+from app.skills.types import SkillSpec
 from app.workspace.manager import WorkspaceManager
+
+
+SKILL_MD_TEMPLATE = """# {skill_name}
+
+## 技能说明
+用一句话说明该技能负责什么。
+
+## 触发条件
+- 触发关键词1
+- 触发关键词2
+
+## 参数说明
+- input(string,required): 输入内容
+- option(string,optional): 可选参数
+
+## 示例
+- 用户说：请用该技能处理这段文本
+- Agent 行为：匹配该技能并按参数调用工具
+"""
 
 
 class SkillLoader:
     def __init__(self, workspace_manager: WorkspaceManager) -> None:
         self._workspace_manager = workspace_manager
         self._parser = SkillParser()
+        self._registry = SkillRegistry()
 
-    def load(self, agent_id: str) -> list[Skill]:
+        self._signatures: dict[str, tuple[tuple[str, int, int], ...]] = {}
+        self._hits = 0
+        self._misses = 0
+        self._lock = Lock()
+
+    def load(self, agent_id: str, force_refresh: bool = False) -> list[SkillSpec]:
         workspace = self._workspace_manager.ensure_agent_workspace(agent_id)
         skills_dir = workspace / "skills"
-        if not skills_dir.exists():
-            return []
+        skills_dir.mkdir(parents=True, exist_ok=True)
 
-        skills: list[Skill] = []
-        for path in skills_dir.iterdir():
-            if path.is_dir():
-                skills.append(self._parser.parse(path))
+        signature = self._directory_signature(skills_dir)
+        with self._lock:
+            cached_signature = self._signatures.get(agent_id)
+            if not force_refresh and cached_signature == signature:
+                self._hits += 1
+                return self._registry.list(agent_id)
+
+        skills: list[SkillSpec] = []
+        for path in sorted(skills_dir.iterdir(), key=lambda item: item.name):
+            if not path.is_dir():
+                continue
+            if not (path / "SKILL.md").exists():
+                continue
+            skills.append(self._parser.parse(path))
+
+        self._registry.register(agent_id, skills)
+        with self._lock:
+            self._misses += 1
+            self._signatures[agent_id] = signature
+
         return skills
 
-    def list_skill_names(self, agent_id: str) -> list[str]:
-        return [skill.name for skill in self.load(agent_id)]
+    def list_skill_names(self, agent_id: str, force_refresh: bool = False) -> list[str]:
+        return [skill.name for skill in self.load(agent_id, force_refresh=force_refresh)]
+
+    def match(self, agent_id: str, user_message: str, max_items: int = 5) -> list[SkillSpec]:
+        self.load(agent_id)
+        matches = self._registry.match(agent_id=agent_id, text=user_message, max_items=max_items)
+        return [skill for skill, _ in matches]
+
+    def match_with_scores(self, agent_id: str, user_message: str, max_items: int = 5) -> list[dict[str, Any]]:
+        self.load(agent_id)
+        matches = self._registry.match(agent_id=agent_id, text=user_message, max_items=max_items)
+        return [{"score": score, "skill": skill.to_dict()} for skill, score in matches]
+
+    def reload(self, agent_id: str) -> list[SkillSpec]:
+        return self.load(agent_id, force_refresh=True)
+
+    def upsert_skill_markdown(self, agent_id: str, skill_id: str, markdown: str) -> SkillSpec:
+        normalized = self._normalize_skill_id(skill_id)
+        workspace = self._workspace_manager.ensure_agent_workspace(agent_id)
+        skill_dir = workspace / "skills" / normalized
+        skill_dir.mkdir(parents=True, exist_ok=True)
+
+        content = markdown.strip()
+        if not content:
+            content = self.render_template(normalized)
+
+        (skill_dir / "SKILL.md").write_text(content + "\n", encoding="utf-8")
+
+        skills = self.load(agent_id, force_refresh=True)
+        for skill in skills:
+            if skill.skill_id == normalized:
+                return skill
+
+        return self._parser.parse(skill_dir)
+
+    def delete_skill(self, agent_id: str, skill_id: str) -> bool:
+        normalized = self._normalize_skill_id(skill_id)
+        workspace = self._workspace_manager.ensure_agent_workspace(agent_id)
+        skill_dir = workspace / "skills" / normalized
+        if not skill_dir.exists():
+            return False
+
+        for file in skill_dir.rglob("*"):
+            if file.is_file():
+                file.unlink()
+        for directory in sorted(skill_dir.rglob("*"), reverse=True):
+            if directory.is_dir():
+                directory.rmdir()
+        skill_dir.rmdir()
+
+        self.load(agent_id, force_refresh=True)
+        return True
+
+    def snapshot(self, agent_id: str, force_refresh: bool = False) -> dict[str, Any]:
+        skills = self.load(agent_id, force_refresh=force_refresh)
+        return {
+            "agent_id": agent_id,
+            "count": len(skills),
+            "skills": [skill.to_dict() for skill in skills],
+        }
+
+    def cache_stats(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "entries": len(self._signatures),
+                "hits": self._hits,
+                "misses": self._misses,
+            }
+
+    def render_template(self, skill_name: str) -> str:
+        return SKILL_MD_TEMPLATE.format(skill_name=skill_name)
+
+    def _directory_signature(self, skills_dir: Path) -> tuple[tuple[str, int, int], ...]:
+        records: list[tuple[str, int, int]] = []
+        for skill_md in sorted(skills_dir.glob("*/SKILL.md"), key=lambda item: str(item)):
+            stat = skill_md.stat()
+            relative = skill_md.relative_to(skills_dir)
+            records.append((relative.as_posix(), stat.st_mtime_ns, stat.st_size))
+        return tuple(records)
+
+    def _normalize_skill_id(self, skill_id: str) -> str:
+        normalized = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in skill_id.strip())
+        normalized = normalized.strip("_")
+        if not normalized:
+            raise ValueError("skill_id cannot be empty")
+        return normalized
