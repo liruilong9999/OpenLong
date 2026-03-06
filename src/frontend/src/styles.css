@@ -18,6 +18,27 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) #0f1013;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #0f1013;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  border: 2px solid #0f1013;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
 }
 
 html,
@@ -363,9 +384,32 @@ button {
 }
 
 .message-role {
-  margin-bottom: 8px;
   font-size: 12px;
   color: var(--text-faint);
+}
+
+.message-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.message-copy-button,
+.code-copy-button {
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.message-copy-button:hover,
+.code-copy-button:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .message-content {
@@ -410,12 +454,23 @@ button {
   font-size: 12px;
 }
 
+.code-block-shell {
+  position: relative;
+}
+
+.code-block-shell pre,
 .message-content pre {
   overflow: auto;
   padding: 12px 14px;
   border-radius: 14px;
   background: rgba(0, 0, 0, 0.28);
   border: 1px solid var(--line);
+}
+
+.code-copy-button {
+  position: absolute;
+  top: 10px;
+  right: 10px;
 }
 
 .message-content pre code {
@@ -700,7 +755,21 @@ button {
   color: var(--text-soft);
   font-size: 13px;
   line-height: 1.8;
-  white-space: pre-wrap;
+}
+
+.mini-card-text > :first-child,
+.context-block > :first-child {
+  margin-top: 0;
+}
+
+.mini-card-text > :last-child,
+.context-block > :last-child {
+  margin-bottom: 0;
+}
+
+.mini-card-text a,
+.context-block a {
+  color: #b8c7ff;
 }
 
 .context-block {

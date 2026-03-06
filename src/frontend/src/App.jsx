@@ -267,6 +267,28 @@ function buildDisplayMessage(text, attachments) {
 }
 
 
+function dedupeMemoryItems(items) {
+  const seen = new Set();
+  const output = [];
+
+  for (const item of items || []) {
+    const key = `${item.memory_type || "unknown"}::${item.content || ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(item);
+  }
+
+  return output;
+}
+
+
+async function copyText(text) {
+  await navigator.clipboard.writeText(String(text || ""));
+}
+
+
 function App() {
   const [health, setHealth] = useState({ status: "checking" });
   const [socketStatus, setSocketStatus] = useState("idle");
@@ -278,6 +300,7 @@ function App() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [globalHint, setGlobalHint] = useState("");
   const [activityItems, setActivityItems] = useState([]);
+  const [copiedMessageKey, setCopiedMessageKey] = useState("");
   const [sessionTitles, setSessionTitles] = useState(() => loadStoredTitles());
   const [inspector, setInspector] = useState({
     loading: true,
@@ -330,6 +353,11 @@ function App() {
       return item.session_id.toLowerCase().includes(query) || title.toLowerCase().includes(query);
     });
   }, [searchText, sessionTitles, sessions]);
+
+  const memoryItems = useMemo(
+    () => dedupeMemoryItems(inspector.memory?.recent_items || []).slice(0, 4),
+    [inspector.memory]
+  );
 
   const hasConversation = messages.some((item) => item.role === "user" || item.role === "assistant");
 
@@ -699,8 +727,26 @@ function App() {
               {messages.map((item, index) => (
                 <div key={`${item.role}-${index}-${item.timestamp || ""}`} className={`message-row ${item.role}`}>
                   <div className={`message-bubble ${item.role}`}>
-                    <div className="message-role">
-                      {item.role === "user" ? "你" : item.role === "assistant" ? "OpenLong" : "系统"}
+                    <div className="message-head">
+                      <div className="message-role">
+                        {item.role === "user" ? "你" : item.role === "assistant" ? "OpenLong" : "系统"}
+                      </div>
+                      {item.role === "assistant" && (
+                        <button
+                          className="message-copy-button"
+                          type="button"
+                          onClick={async () => {
+                            await copyText(item.content);
+                            const key = `${index}-${item.timestamp || ""}`;
+                            setCopiedMessageKey(key);
+                            window.setTimeout(() => {
+                              setCopiedMessageKey((current) => (current === key ? "" : current));
+                            }, 1500);
+                          }}
+                        >
+                          {copiedMessageKey === `${index}-${item.timestamp || ""}` ? "已复制" : "复制回复"}
+                        </button>
+                      )}
                     </div>
                     <div className="message-content">
                       <MarkdownMessage content={item.content} />
@@ -785,10 +831,10 @@ function App() {
               </div>
               <div className="mini-tags">类型：{Object.keys(inspector.memory.by_type || {}).join("、") || "暂无"}</div>
               <div className="stack-list">
-                {(inspector.memory.recent_items || []).slice(0, 4).map((item) => (
+                {memoryItems.map((item) => (
                   <div key={item.memory_id} className="mini-card">
                     <div className="mini-card-title">{item.memory_type}</div>
-                    <div className="mini-card-text">{item.content}</div>
+                    <div className="mini-card-text"><RichMarkdownText content={item.content} /></div>
                   </div>
                 ))}
               </div>
@@ -797,11 +843,11 @@ function App() {
         </InspectorSection>
 
         <InspectorSection title="用户（USER.md）">
-          <pre className="context-block">{contextBody(inspector.context, "USER.md")}</pre>
+          <div className="context-block"><RichMarkdownText content={contextBody(inspector.context, "USER.md")} /></div>
         </InspectorSection>
 
         <InspectorSection title="OpenLong（SOUL.md）">
-          <pre className="context-block">{contextBody(inspector.context, "SOUL.md")}</pre>
+          <div className="context-block"><RichMarkdownText content={contextBody(inspector.context, "SOUL.md")} /></div>
         </InspectorSection>
 
         <InspectorSection title="其它（运行信息）">
@@ -811,11 +857,11 @@ function App() {
           <div className="metric-row"><span>任务队列</span><strong>{inspector.system?.task_queue?.total ?? 0}</strong></div>
           <div className="mini-card">
             <div className="mini-card-title">RULES.md</div>
-            <div className="mini-card-text">{previewText(contextBody(inspector.context, "RULES.md"), 90)}</div>
+            <div className="mini-card-text"><RichMarkdownText content={previewText(contextBody(inspector.context, "RULES.md"), 90)} /></div>
           </div>
           <div className="mini-card">
             <div className="mini-card-title">STYLE.md</div>
-            <div className="mini-card-text">{previewText(contextBody(inspector.context, "STYLE.md"), 90)}</div>
+            <div className="mini-card-text"><RichMarkdownText content={previewText(contextBody(inspector.context, "STYLE.md"), 90)} /></div>
           </div>
         </InspectorSection>
       </aside>
@@ -1009,10 +1055,55 @@ function MarkdownMessage({ content }) {
       remarkPlugins={[remarkGfm]}
       components={{
         a: ({ node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+        code: ({ inline, className, children, ...props }) => {
+          const value = String(children || "").replace(/\n$/, "");
+          if (inline) {
+            return <code className={className} {...props}>{children}</code>;
+          }
+          return <CodeBlock className={className} value={value} />;
+        },
       }}
     >
       {String(content || "")}
     </ReactMarkdown>
+  );
+}
+
+
+function RichMarkdownText({ content }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a: ({ node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+      }}
+    >
+      {String(content || "")}
+    </ReactMarkdown>
+  );
+}
+
+
+function CodeBlock({ className, value }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <div className="code-block-shell">
+      <button
+        className="code-copy-button"
+        type="button"
+        onClick={async () => {
+          await copyText(value);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1500);
+        }}
+      >
+        {copied ? "已复制" : "复制代码"}
+      </button>
+      <pre>
+        <code className={className}>{value}</code>
+      </pre>
+    </div>
   );
 }
 
