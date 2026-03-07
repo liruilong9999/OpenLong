@@ -42,7 +42,7 @@ function CodeEditorPanel({
           <div className="ide-panel-subtitle">{selectedFile ? `${selectedFile.scope} · ${selectedFile.path}` : "选择一个文件开始编辑"}</div>
         </div>
         <div className="ide-toolbar-row">
-          <button type="button" onClick={onSave} disabled={!selectedFile || !dirty || saving}>
+          <button data-testid="ide-save" type="button" onClick={onSave} disabled={!selectedFile || !dirty || saving}>
             {saving ? "保存中" : "保存文件"}
           </button>
         </div>
@@ -53,6 +53,7 @@ function CodeEditorPanel({
       ) : (
         <>
           <textarea
+            data-testid="ide-editor"
             className="ide-editor-textarea"
             value={editedContent}
             onChange={(event) => onChange?.(event.target.value)}
@@ -61,7 +62,7 @@ function CodeEditorPanel({
 
           <div className="ide-diff-block">
             <div className="ide-subtitle-row">Diff 预览</div>
-            <div className="ide-diff-shell">
+            <div className="ide-diff-shell" data-testid="ide-diff">
               {diffRows.map((row, index) => (
                 <div key={`${row.type}-${index}`} className={`ide-diff-line ${row.type}`}>
                   <span className="ide-diff-marker">{row.type === "added" ? "+" : row.type === "removed" ? "-" : " "}</span>

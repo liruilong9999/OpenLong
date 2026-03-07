@@ -6,6 +6,8 @@ function TreeNode({ node, depth = 0, selectedPath = "", onSelect }) {
     <div>
       <button
         type="button"
+        data-testid={isDirectory ? "file-tree-directory" : "file-tree-file"}
+        data-path={node?.path || ""}
         className={`file-tree-node ${isSelected ? "active" : ""} ${isDirectory ? "directory" : "file"}`}
         style={{ paddingLeft: `${12 + depth * 14}px` }}
         onClick={() => !isDirectory && onSelect?.(node)}
@@ -31,11 +33,11 @@ function FileExplorer({ treeData, loading, error, scope, onScopeChange, onRefres
           <div className="ide-panel-subtitle">浏览 project / workspace 文件</div>
         </div>
         <div className="ide-toolbar-row">
-          <select value={scope} onChange={(event) => onScopeChange?.(event.target.value)}>
+          <select data-testid="file-scope-select" value={scope} onChange={(event) => onScopeChange?.(event.target.value)}>
             <option value="project">Project</option>
             <option value="workspace">Workspace</option>
           </select>
-          <button type="button" onClick={onRefresh}>刷新</button>
+          <button data-testid="file-tree-refresh" type="button" onClick={onRefresh}>刷新</button>
         </div>
       </div>
 

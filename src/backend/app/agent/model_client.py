@@ -50,7 +50,7 @@ class HeuristicModelClient:
 
         if request.attachments and any(self._is_image_attachment(item) for item in request.attachments):
             return ModelOutput(
-                text="我已收到图片附件，接下来会优先尝试结合视觉能力进行分析。",
+                text=self._apply_prompt_persona("我已收到图片附件，接下来会优先尝试结合视觉能力进行分析。", prompt),
                 confidence=0.72,
                 should_call_tool=False,
                 should_continue=False,
@@ -59,7 +59,7 @@ class HeuristicModelClient:
 
         if self._is_follow_up_success_query(lower) and self._prompt_contains_success(prompt):
             return ModelOutput(
-                text="已经创建好了，上一轮工具执行成功。",
+                text=self._apply_prompt_persona("已经创建好了，上一轮工具执行成功。", prompt),
                 confidence=0.88,
                 should_call_tool=False,
                 should_continue=False,
@@ -69,7 +69,7 @@ class HeuristicModelClient:
         remembered_time = self._extract_previous_availability(prompt)
         if remembered_time and any(token in user_message for token in ["记得", "有空", "什么时候"]):
             return ModelOutput(
-                text=f"你前面提到你平时有空的时间是：{remembered_time}。",
+                text=self._apply_prompt_persona(f"你前面提到你平时有空的时间是：{remembered_time}。", prompt),
                 confidence=0.82,
                 should_call_tool=False,
                 should_continue=False,
@@ -78,7 +78,7 @@ class HeuristicModelClient:
 
         if request.tool_summaries:
             return ModelOutput(
-                text="已获取工具结果，正在整理最终答案。",
+                text=self._apply_prompt_persona("已获取工具结果，正在整理最终答案。", prompt),
                 confidence=0.75,
                 should_call_tool=False,
                 should_continue=False,
@@ -87,7 +87,7 @@ class HeuristicModelClient:
 
         if user_message.startswith("/tool "):
             return ModelOutput(
-                text="检测到显式工具命令，准备执行工具。",
+                text=self._apply_prompt_persona("检测到显式工具命令，准备执行工具。", prompt),
                 confidence=0.9,
                 should_call_tool=bool(structured_calls),
                 should_continue=True,
@@ -98,7 +98,7 @@ class HeuristicModelClient:
 
         if user_message.startswith("/think") and request.iteration == 0:
             return ModelOutput(
-                text="继续思考中，将在下一轮给出结论。",
+                text=self._apply_prompt_persona("继续思考中，将在下一轮给出结论。", prompt),
                 confidence=0.7,
                 should_call_tool=False,
                 should_continue=True,
@@ -107,7 +107,7 @@ class HeuristicModelClient:
 
         if tool_hint and request.iteration == 0:
             return ModelOutput(
-                text="该任务可能需要工具信息支撑，先尝试工具调用。",
+                text=self._apply_prompt_persona("该任务可能需要工具信息支撑，先尝试工具调用。", prompt),
                 confidence=0.65,
                 should_call_tool=bool(structured_calls),
                 should_continue=True,
@@ -117,11 +117,41 @@ class HeuristicModelClient:
             )
 
         return ModelOutput(
-            text=f"我已理解你的请求：{request.user_message[:160]}",
+            text=self._apply_prompt_persona(f"我已理解你的请求：{request.user_message[:160]}", prompt),
             confidence=0.6,
             should_call_tool=False,
             should_continue=False,
             metadata={"mode": "direct_answer", "prompt_chars": len(request.prompt)},
+        )
+
+    def _apply_prompt_persona(self, text: str, prompt: str) -> str:
+        result = str(text or "")
+        prefix = self._required_prefix(prompt)
+        if prefix and not result.startswith(prefix):
+            result = f"{prefix} {result}".strip()
+
+        if self._should_keep_short(prompt):
+            if "。" in result:
+                result = result.split("。", 1)[0] + "。"
+            elif len(result) > 60:
+                result = result[:59] + "…"
+        return result
+
+    def _required_prefix(self, prompt: str) -> str | None:
+        patterns = [
+            r"所有回复必须以\s*(\[[^\]]+\])\s*开头",
+            r"Always start every reply with\s*(\[[^\]]+\])",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, prompt, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return None
+
+    def _should_keep_short(self, prompt: str) -> bool:
+        lowered = prompt.lower()
+        return any(token in prompt for token in ["所有回复尽量简短", "保持简短", "简洁回复"]) or any(
+            token in lowered for token in ["keep replies short", "be brief", "concise replies"]
         )
 
     def _guess_tool_hint(self, user_message: str) -> str | None:

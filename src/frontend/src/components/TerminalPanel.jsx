@@ -41,13 +41,13 @@ function TerminalPanel({
       </div>
 
       <form className="terminal-form" onSubmit={submit}>
-        <input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="例如：pytest -q 或 npm install" />
-        <input value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="cwd（可选，例如 src/frontend）" />
-        <select value={cwdScope} onChange={(event) => setCwdScope(event.target.value)}>
+        <input data-testid="terminal-command" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="例如：pytest -q 或 npm install" />
+        <input data-testid="terminal-cwd" value={cwd} onChange={(event) => setCwd(event.target.value)} placeholder="cwd（可选，例如 src/frontend）" />
+        <select data-testid="terminal-cwd-scope" value={cwdScope} onChange={(event) => setCwdScope(event.target.value)}>
           <option value="project">Project</option>
           <option value="workspace">Workspace</option>
         </select>
-        <button type="submit" disabled={running}>{running ? "提交中" : "运行命令"}</button>
+        <button data-testid="terminal-run" type="submit" disabled={running}>{running ? "提交中" : "运行命令"}</button>
       </form>
 
       <div className="stack-list">
@@ -58,10 +58,10 @@ function TerminalPanel({
               <code>{item.command_preview}</code>
             </div>
             <div className="approval-action-row">
-              <button type="button" disabled={approvalBusyId === item.approval_id} onClick={() => onApprove?.(item.approval_id)}>
+              <button data-testid="approval-approve" data-approval-id={item.approval_id} type="button" disabled={approvalBusyId === item.approval_id} onClick={() => onApprove?.(item.approval_id)}>
                 {approvalBusyId === item.approval_id ? "处理中" : "批准"}
               </button>
-              <button type="button" disabled={approvalBusyId === item.approval_id} onClick={() => onReject?.(item.approval_id)}>
+              <button data-testid="approval-reject" data-approval-id={item.approval_id} type="button" disabled={approvalBusyId === item.approval_id} onClick={() => onReject?.(item.approval_id)}>
                 拒绝
               </button>
             </div>
@@ -71,7 +71,7 @@ function TerminalPanel({
         {!!liveShellLines.length && (
           <div className="mini-card">
             <div className="mini-card-title">实时输出</div>
-            <div className="shell-live-output">
+            <div className="shell-live-output" data-testid="terminal-live-output">
               {liveShellLines.map((line, index) => (
                 <div key={`${line}-${index}`}>{line}</div>
               ))}

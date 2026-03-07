@@ -351,6 +351,8 @@ function App() {
   const [workspaceBusyAction, setWorkspaceBusyAction] = useState("");
   const [workspaceTemplateName, setWorkspaceTemplateName] = useState("default");
   const [workspaceOverwrite, setWorkspaceOverwrite] = useState(false);
+  const [showTools, setShowTools] = useState(false);
+  const [showInspector, setShowInspector] = useState(false);
   const [ideScope, setIdeScope] = useState("project");
   const [fileTreeState, setFileTreeState] = useState({ loading: true, error: "", data: null });
   const [selectedFile, setSelectedFile] = useState(null);
@@ -408,6 +410,45 @@ function App() {
     void refreshWorkspacePanel();
   }, [currentAgentId]);
 
+  const selectedSession = useMemo(
+    () => sessions.find((item) => item.session_id === selectedSessionId) || null,
+    [sessions, selectedSessionId]
+  );
+
+  const currentAgent = useMemo(
+    () => agents.find((item) => item.agent_id === currentAgentId) || null,
+    [agents, currentAgentId]
+  );
+
+  const agentSessions = useMemo(
+    () => sessions.filter((item) => item.agent_id === currentAgentId),
+    [sessions, currentAgentId]
+  );
+
+  const filteredSessions = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+    if (!query) {
+      return agentSessions;
+    }
+
+    return agentSessions.filter((item) => {
+      const title = sessionTitles[item.session_id] || "";
+      return item.session_id.toLowerCase().includes(query) || title.toLowerCase().includes(query);
+    });
+  }, [agentSessions, searchText, sessionTitles]);
+
+  const memoryItems = useMemo(
+    () => dedupeMemoryItems(inspector.memory?.recent_items || []).slice(0, 4),
+    [inspector.memory]
+  );
+  const approvalItems = useMemo(() => inspector.system?.tool_approvals?.items || [], [inspector.system]);
+  const shellLogItems = useMemo(() => inspector.system?.shell_logs?.items || [], [inspector.system]);
+  const skillItems = useMemo(() => inspector.skills?.skills || [], [inspector.skills]);
+  const selectedSkill = useMemo(
+    () => skillItems.find((item) => item.skill_id === selectedSkillId) || null,
+    [selectedSkillId, skillItems]
+  );
+
   useEffect(() => {
     if (!skillItems.length) {
       if (!selectedSkillId) {
@@ -432,43 +473,6 @@ function App() {
       setSkillEditorValue(selectedSkill.markdown || selectedSkill.raw_markdown || "");
     }
   }, [selectedSkill?.skill_id, selectedSkill?.mtime_ns]);
-
-  const selectedSession = useMemo(
-    () => sessions.find((item) => item.session_id === selectedSessionId) || null,
-    [sessions, selectedSessionId]
-  );
-
-  const filteredSessions = useMemo(() => {
-    const query = searchText.trim().toLowerCase();
-    if (!query) {
-      return agentSessions;
-    }
-
-    return agentSessions.filter((item) => {
-      const title = sessionTitles[item.session_id] || "";
-      return item.session_id.toLowerCase().includes(query) || title.toLowerCase().includes(query);
-    });
-  }, [agentSessions, searchText, sessionTitles]);
-
-  const memoryItems = useMemo(
-    () => dedupeMemoryItems(inspector.memory?.recent_items || []).slice(0, 4),
-    [inspector.memory]
-  );
-  const approvalItems = useMemo(() => inspector.system?.tool_approvals?.items || [], [inspector.system]);
-  const shellLogItems = useMemo(() => inspector.system?.shell_logs?.items || [], [inspector.system]);
-  const skillItems = useMemo(() => inspector.skills?.skills || [], [inspector.skills]);
-  const currentAgent = useMemo(
-    () => agents.find((item) => item.agent_id === currentAgentId) || null,
-    [agents, currentAgentId]
-  );
-  const agentSessions = useMemo(
-    () => sessions.filter((item) => item.agent_id === currentAgentId),
-    [sessions, currentAgentId]
-  );
-  const selectedSkill = useMemo(
-    () => skillItems.find((item) => item.skill_id === selectedSkillId) || null,
-    [selectedSkillId, skillItems]
-  );
 
   const hasConversation = messages.some((item) => item.role === "user" || item.role === "assistant");
 
@@ -1137,7 +1141,7 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell simple-layout ${showInspector ? "inspector-open" : "inspector-hidden"}`}> 
       <aside className="sidebar-shell">
         <div className="sidebar-top">
           <div className="brand-mark">OL</div>
@@ -1148,7 +1152,7 @@ function App() {
 
         <div className="agent-switcher-block">
           <div className="sidebar-title">当前 Agent</div>
-          <select value={currentAgentId} onChange={(event) => handleAgentChange(event.target.value)}>
+          <select data-testid="agent-select" value={currentAgentId} onChange={(event) => handleAgentChange(event.target.value)}>
             {agents.map((item) => (
               <option key={item.agent_id} value={item.agent_id}>
                 {item.agent_id} · {item.status}
@@ -1156,9 +1160,9 @@ function App() {
             ))}
           </select>
           <div className="agent-action-row">
-            <button type="button" onClick={handleCreateAgent} disabled={agentBusyAction.startsWith("create:")}>新建</button>
-            <button type="button" onClick={handleStopCurrentAgent} disabled={!currentAgent || currentAgentId === DEFAULT_AGENT_ID || agentBusyAction.startsWith("stop:")}>停止</button>
-            <button type="button" onClick={handleDeleteCurrentAgent} disabled={!currentAgent || currentAgentId === DEFAULT_AGENT_ID || agentBusyAction.startsWith("delete:")}>删除</button>
+            <button data-testid="agent-create" type="button" onClick={handleCreateAgent} disabled={agentBusyAction.startsWith("create:")}>新建</button>
+            <button data-testid="agent-stop" type="button" onClick={handleStopCurrentAgent} disabled={!currentAgent || currentAgentId === DEFAULT_AGENT_ID || agentBusyAction.startsWith("stop:")}>停止</button>
+            <button data-testid="agent-delete" type="button" onClick={handleDeleteCurrentAgent} disabled={!currentAgent || currentAgentId === DEFAULT_AGENT_ID || agentBusyAction.startsWith("delete:")}>删除</button>
           </div>
           <div className="agent-meta-list">
             <div className="metric-row"><span>状态</span><strong>{currentAgent?.status || "unknown"}</strong></div>
@@ -1218,7 +1222,7 @@ function App() {
         </div>
       </aside>
 
-      <main className="workspace-shell">
+      <main className={`workspace-shell ${showTools ? "tools-open" : "tools-hidden"}`}> 
         <header className="workspace-topbar">
           <div>
             <div className="workspace-title">OpenLong</div>
@@ -1228,8 +1232,14 @@ function App() {
           </div>
 
           <div className="status-group">
+            <button type="button" onClick={() => setShowTools((current) => !current)}>
+              {showTools ? "Hide tools" : "Tools"}
+            </button>
+            <button type="button" onClick={() => setShowInspector((current) => !current)}>
+              {showInspector ? "Hide info" : "Runtime"}
+            </button>
             {!!selectedSession && selectedSession.agent_id !== currentAgentId && (
-              <button type="button" onClick={handleAssignSelectedSession} disabled={agentBusyAction.startsWith("assign:")}>绑定到当前 Agent</button>
+              <button data-testid="session-assign-current-agent" type="button" onClick={handleAssignSelectedSession} disabled={agentBusyAction.startsWith("assign:")}>绑定到当前 Agent</button>
             )}
             <span className={`status-pill ${health.status === "ok" ? "ok" : "warn"}`}>
               {resolveHealthLabel(health)}
@@ -1317,7 +1327,17 @@ function App() {
           {globalHint && <div className="global-hint">{globalHint}</div>}
         </section>
 
-        <section className="ide-workbench">
+        {showTools && (
+          <section className="aux-tools-shell">
+            <div className="aux-shell-header">
+              <div>
+                <div className="aux-shell-title">Tools</div>
+                <div className="aux-shell-subtitle">Files, editor and command runner</div>
+              </div>
+              <button type="button" onClick={() => setShowTools(false)}>Close</button>
+            </div>
+
+            <section className="ide-workbench">
           <FileExplorer
             treeData={fileTreeState.data}
             loading={fileTreeState.loading}
@@ -1346,10 +1366,13 @@ function App() {
             liveShellLines={liveShellLines}
             shellLogs={shellLogItems}
           />
-        </section>
+            </section>
+          </section>
+        )}
       </main>
 
-      <aside className="inspector-shell">
+      {showInspector && (
+        <aside className="inspector-shell">
         <div className="inspector-header">
           <div className="inspector-title">运行面板</div>
           <div className="inspector-subtitle">基于当前后端接口实时读取</div>
@@ -1365,10 +1388,10 @@ function App() {
                 <strong>{inspector.skills?.count ?? 0}</strong>
               </div>
               <div className="agent-action-row">
-                <button type="button" onClick={handleCreateSkill} disabled={skillBusyAction.startsWith("template:")}>新建模板</button>
-                <button type="button" onClick={handleReloadSkills} disabled={skillBusyAction === "reload"}>重载技能</button>
-                <button type="button" onClick={handleSaveSkill} disabled={!selectedSkillId || skillBusyAction.startsWith("save:")}>保存技能</button>
-                <button type="button" onClick={() => handleDeleteSkill(selectedSkillId)} disabled={!selectedSkill || !!selectedSkill?.plugin_id || skillBusyAction.startsWith("delete:")}>删除技能</button>
+                <button data-testid="skill-template-create" type="button" onClick={handleCreateSkill} disabled={skillBusyAction.startsWith("template:")}>新建模板</button>
+                <button data-testid="skill-reload" type="button" onClick={handleReloadSkills} disabled={skillBusyAction === "reload"}>重载技能</button>
+                <button data-testid="skill-save" type="button" onClick={handleSaveSkill} disabled={!selectedSkillId || skillBusyAction.startsWith("save:")}>保存技能</button>
+                <button data-testid="skill-delete" type="button" onClick={() => handleDeleteSkill(selectedSkillId)} disabled={!selectedSkill || !!selectedSkill?.plugin_id || skillBusyAction.startsWith("delete:")}>删除技能</button>
               </div>
 
               {!!skillItems.length && (
@@ -1398,6 +1421,7 @@ function App() {
                         <div className="metric-row"><span>技能 ID</span><strong>{selectedSkill?.skill_id || selectedSkillId}</strong></div>
                         <div className="metric-row"><span>来源</span><strong>{selectedSkill?.plugin_id ? `插件 ${selectedSkill.plugin_name || selectedSkill.plugin_id}` : "工作区自定义"}</strong></div>
                         <textarea
+                          data-testid="skill-editor"
                           className="skill-editor-textarea"
                           value={skillEditorValue}
                           onChange={(event) => setSkillEditorValue(event.target.value)}
@@ -1448,7 +1472,7 @@ function App() {
           {!workspacePanel.loading && !workspacePanel.error && (
             <>
               <div className="agent-action-row">
-                <select value={workspaceTemplateName} onChange={(event) => setWorkspaceTemplateName(event.target.value)}>
+                <select data-testid="workspace-template-select" value={workspaceTemplateName} onChange={(event) => setWorkspaceTemplateName(event.target.value)}>
                   {(workspacePanel.templates || []).map((item) => (
                     <option key={item.name} value={item.name}>{item.name}</option>
                   ))}
@@ -1460,11 +1484,11 @@ function App() {
               </div>
 
               <div className="agent-action-row">
-                <button type="button" onClick={handleCreateWorkspace} disabled={workspaceBusyAction.startsWith("create:")}>创建/更新</button>
-                <button type="button" onClick={handleBackupWorkspace} disabled={workspaceBusyAction.startsWith("backup:")}>备份</button>
-                <button type="button" onClick={handleRestoreWorkspace} disabled={workspaceBusyAction.startsWith("restore:")}>恢复</button>
-                <button type="button" onClick={refreshWorkspacePanel}>刷新</button>
-                <button type="button" onClick={handleDeleteWorkspace} disabled={currentAgentId === DEFAULT_AGENT_ID || workspaceBusyAction.startsWith("delete:")}>删除</button>
+                <button data-testid="workspace-create-update" type="button" onClick={handleCreateWorkspace} disabled={workspaceBusyAction.startsWith("create:")}>创建/更新</button>
+                <button data-testid="workspace-backup" type="button" onClick={handleBackupWorkspace} disabled={workspaceBusyAction.startsWith("backup:")}>备份</button>
+                <button data-testid="workspace-restore" type="button" onClick={handleRestoreWorkspace} disabled={workspaceBusyAction.startsWith("restore:")}>恢复</button>
+                <button data-testid="workspace-refresh" type="button" onClick={refreshWorkspacePanel}>刷新</button>
+                <button data-testid="workspace-delete" type="button" onClick={handleDeleteWorkspace} disabled={currentAgentId === DEFAULT_AGENT_ID || workspaceBusyAction.startsWith("delete:")}>删除</button>
               </div>
 
               {!!workspacePanel.current && (
@@ -1597,7 +1621,8 @@ function App() {
             ))}
           </div>
         </InspectorSection>
-      </aside>
+        </aside>
+      )}
     </div>
   );
 }
@@ -1757,13 +1782,14 @@ function ChatComposer({ sending, onSend, onUploadFiles, sessionId }) {
           ＋
         </button>
         <textarea
+          data-testid="chat-input"
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
           placeholder="有问题，尽管问"
           rows={1}
         />
-        <button className="composer-send" type="submit" disabled={sending || uploading}>
+        <button data-testid="chat-send" className="composer-send" type="submit" disabled={sending || uploading}>
           {uploading ? "上传中" : sending ? "发送中" : "发送"}
         </button>
       </div>
