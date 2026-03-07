@@ -110,6 +110,18 @@ class FileContentUpsertRequest(BaseModel):
     scope: str = Field(default="auto")
 
 
+class AutomationUpsertRequest(BaseModel):
+    name: str = Field(min_length=1)
+    agent_id: str = Field(default="main")
+    prompt: str = Field(min_length=1)
+    cron: str = Field(min_length=1)
+    enabled: bool = True
+    session_target: str = Field(default="isolated")
+    delivery_mode: str = Field(default="none")
+    delivery_to: str = Field(default="")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 def build_api_router() -> APIRouter:
     router = APIRouter()
 
@@ -324,6 +336,71 @@ def build_api_router() -> APIRouter:
         if not closed:
             raise HTTPException(status_code=404, detail="session not found")
         return {"closed": True}
+
+    @router.get("/automations")
+    async def list_automations(request: Request) -> dict[str, Any]:
+        return request.app.state.runtime.list_automations()
+
+    @router.post("/automations")
+    async def create_automation(body: AutomationUpsertRequest, request: Request) -> dict[str, Any]:
+        return request.app.state.runtime.create_automation(
+            name=body.name,
+            agent_id=body.agent_id,
+            prompt=body.prompt,
+            cron=body.cron,
+            enabled=body.enabled,
+            session_target=body.session_target,
+            delivery_mode=body.delivery_mode,
+            delivery_to=body.delivery_to,
+            metadata=body.metadata,
+        )
+
+    @router.post("/automations/run-due")
+    async def run_due_automations(request: Request) -> list[dict[str, Any]]:
+        return await request.app.state.runtime.run_due_automations()
+
+    @router.get("/automations/runs")
+    async def automation_runs(request: Request, job_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+        return request.app.state.runtime.automation_runs(job_id=job_id, limit=limit)
+
+    @router.get("/automations/{job_id}")
+    async def get_automation(job_id: str, request: Request) -> dict[str, Any]:
+        payload = request.app.state.runtime.get_automation(job_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="automation not found")
+        return payload
+
+    @router.put("/automations/{job_id}")
+    async def update_automation(job_id: str, body: AutomationUpsertRequest, request: Request) -> dict[str, Any]:
+        try:
+            return request.app.state.runtime.update_automation(
+                job_id,
+                name=body.name,
+                agent_id=body.agent_id,
+                prompt=body.prompt,
+                cron=body.cron,
+                enabled=body.enabled,
+                session_target=body.session_target,
+                delivery_mode=body.delivery_mode,
+                delivery_to=body.delivery_to,
+                metadata=body.metadata,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.delete("/automations/{job_id}")
+    async def delete_automation(job_id: str, request: Request) -> dict[str, Any]:
+        payload = request.app.state.runtime.delete_automation(job_id)
+        if not payload.get("deleted"):
+            raise HTTPException(status_code=404, detail="automation not found")
+        return payload
+
+    @router.post("/automations/{job_id}/run")
+    async def run_automation(job_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return await request.app.state.runtime.run_automation(job_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @router.get("/workspaces/templates")
     async def workspace_templates(request: Request) -> dict[str, Any]:

@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     model_routes_path: str = Field(default="")
 
     workspace_root: str = Field(default="workspace")
+    automation_webhook_token: str = Field(default="")
     tool_profile: str = Field(default="coding")
     tool_shell_enabled: bool = Field(default=True)
     tool_allowlist: str = Field(default="")

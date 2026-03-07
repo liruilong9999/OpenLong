@@ -67,6 +67,15 @@ def create_app() -> FastAPI:
     )
     app.add_middleware(GatewayAuthMiddleware)
     app.state.runtime = GatewayRuntime.from_settings(settings)
+
+    @app.on_event("startup")
+    async def _startup() -> None:
+        await app.state.runtime.automation_service.start()
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        await app.state.runtime.automation_service.stop()
+
     app.include_router(build_api_router())
     return app
 

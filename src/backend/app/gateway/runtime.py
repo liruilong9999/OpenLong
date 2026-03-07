@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.agent.runtime import AgentRuntime
+from app.automation.service import AutomationService
 from app.channel.manager import ChannelManager
 from app.core.config import Settings
 from app.core.events import Event, EventBus
@@ -48,6 +49,15 @@ class GatewayRuntime:
     channel_manager: ChannelManager
     self_evolution_engine: SelfEvolutionEngine
     agent_runtime: AgentRuntime
+    automation_service: AutomationService | None = None
+
+    def __post_init__(self) -> None:
+        if self.automation_service is None:
+            self.automation_service = AutomationService(
+                self.workspace_manager.workspace_root / "_automations",
+                webhook_token=getattr(self.settings, "automation_webhook_token", ""),
+            )
+        self.automation_service.bind_runtime(self)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "GatewayRuntime":
@@ -87,6 +97,10 @@ class GatewayRuntime:
             log_store=tool_log_store,
         )
         model_router = ModelRouter(settings, event_bus=event_bus)
+        automation_service = AutomationService(
+            workspace_manager.workspace_root / "_automations",
+            webhook_token=settings.automation_webhook_token,
+        )
 
         agent_runtime = AgentRuntime.from_settings(
             settings=settings,
@@ -113,6 +127,7 @@ class GatewayRuntime:
             channel_manager=ChannelManager(),
             self_evolution_engine=SelfEvolutionEngine(),
             agent_runtime=agent_runtime,
+            automation_service=automation_service,
         )
         runtime._register_event_handlers()
         runtime._restore_session_runtime_state()
@@ -169,6 +184,10 @@ class GatewayRuntime:
             "task.started",
             "task.completed",
             "task.failed",
+            "automation.run.started",
+            "automation.run.completed",
+            "automation.run.failed",
+            "automation.loop.failed",
         ]
 
         for event_name in relay_events:
@@ -1097,6 +1116,30 @@ class GatewayRuntime:
             "items": self.event_bus.recent(limit=limit, event_name=event_name),
         }
 
+    def list_automations(self) -> dict[str, Any]:
+        return self.automation_service.list_jobs()
+
+    def get_automation(self, job_id: str) -> dict[str, Any] | None:
+        return self.automation_service.get_job(job_id)
+
+    def create_automation(self, **kwargs: Any) -> dict[str, Any]:
+        return self.automation_service.create_job(**kwargs)
+
+    def update_automation(self, job_id: str, **changes: Any) -> dict[str, Any]:
+        return self.automation_service.update_job(job_id, **changes)
+
+    def delete_automation(self, job_id: str) -> dict[str, Any]:
+        return self.automation_service.delete_job(job_id)
+
+    async def run_automation(self, job_id: str) -> dict[str, Any]:
+        return await self.automation_service.run_job(job_id)
+
+    async def run_due_automations(self, now=None) -> list[dict[str, Any]]:
+        return await self.automation_service.run_due_jobs(now=now)
+
+    def automation_runs(self, job_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+        return self.automation_service.list_runs(job_id=job_id, limit=limit)
+
     def dashboard_sessions(self) -> list[dict[str, Any]]:
         return self.session_manager.list_sessions(include_closed=True)
 
@@ -1159,6 +1202,8 @@ class GatewayRuntime:
             "tool_logs": self.tool_executor.log_stats(),
             "tool_approvals": self.tool_executor.approval_snapshot(limit=10),
             "shell_logs": self.tool_logs(limit=10, tool_name="shell"),
+            "automations": self.automation_service.list_jobs(),
+            "automation_runs": self.automation_service.list_runs(limit=10),
             "workspaces": {
                 "total": len(self.workspace_manager.list_workspaces()),
                 "templates": len(self.workspace_manager.list_templates()["templates"]),
