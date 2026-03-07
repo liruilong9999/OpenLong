@@ -192,6 +192,7 @@ class MemoryManager:
         limit: int = 20,
         memory_type: str | None = None,
         min_weight: float = 0.0,
+        similarity_threshold: float = 0.12,
     ) -> dict[str, Any]:
         paths = self._memory_paths(agent_id)
         entries = self._load_entries(paths["records_file"])
@@ -203,6 +204,7 @@ class MemoryManager:
             limit=limit,
             memory_type=memory_type,
             min_weight=min_weight,
+            similarity_threshold=similarity_threshold,
         )
 
         # 检索会更新 access_count/last_accessed_at，持久化到磁盘。
@@ -222,14 +224,17 @@ class MemoryManager:
                 "access_count": entry.access_count,
                 "last_accessed_at": entry.last_accessed_at.isoformat() if entry.last_accessed_at else None,
                 "metadata": entry.metadata,
-                "score": round(score, 6),
+                "score": match.score,
+                "score_breakdown": match.to_dict(),
             }
-            for entry, score in matches
+            for match in matches
+            for entry in [match.entry]
         ]
 
         return {
             "agent_id": agent_id,
             "query": query,
+            "similarity_threshold": similarity_threshold,
             "total_entries": len(entries),
             "matched": len(items),
             "items": items,
