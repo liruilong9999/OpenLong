@@ -67,9 +67,44 @@ def test_memory_summarizer_compressor_and_decay() -> None:
     assert changed is True
     assert any(item.weight < item.importance for item in entries[:10])
 
-    compressed, removed = compressor.compress(entries, max_entries=8, max_total_chars=500)
+    compressed, removed = compressor.compress(entries, max_entries=8, max_total_chars=500, max_total_tokens=160)
     assert len(compressed) <= 8
     assert removed > 0
+    assert any(item.memory_type == MemoryType.AGENT_SUMMARY for item in compressed)
+
+
+def test_memory_compaction_preserves_historical_recall_via_summary(tmp_path: Path) -> None:
+    workspace_manager = WorkspaceManager(str(tmp_path))
+    manager = MemoryManager(workspace_manager)
+
+    for index in range(25):
+        manager.write(
+            agent_id="main",
+            session_id=f"hist-{index}",
+            entry=f"user_fact: Alice likes Python and testing workflows #{index}",
+            source="history_test",
+            memory_type="user_info",
+            importance=0.92 if index == 0 else 0.62,
+        )
+
+    paths = manager._memory_paths("main")  # noqa: SLF001
+    entries = manager._load_entries(paths["records_file"])  # noqa: SLF001
+    compressed, removed = manager._compressor.compress(  # noqa: SLF001
+        entries,
+        max_entries=8,
+        max_total_chars=800,
+        max_total_tokens=180,
+        keep_recent=4,
+    )
+    assert removed > 0
+    assert any(item.memory_type == MemoryType.AGENT_SUMMARY and item.metadata.get("compaction") for item in compressed)
+
+    manager._save_entries(paths["records_file"], compressed)  # noqa: SLF001
+
+    recalled = manager.query(agent_id="main", query="What does Alice prefer in Python workflows?", limit=5)
+    assert recalled["matched"] >= 1
+    assert any("Alice" in item["content"] for item in recalled["items"])
+    assert any(item["memory_type"] == "agent_summary" for item in recalled["items"])
 
 
 def test_memory_api_query_and_dashboard() -> None:

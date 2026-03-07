@@ -265,11 +265,16 @@ class MemoryManager:
         paths = self._memory_paths(agent_id)
         entries = self._load_entries(paths["records_file"])
         before = len(entries)
+        before_chars = self._compressor.estimate_total_chars(entries)
+        before_tokens = self._compressor.estimate_total_tokens(entries)
 
         self._retriever.apply_decay(entries)
         compressed, removed = self._compressor.compress(entries)
         self._save_entries(paths["records_file"], compressed)
         self._save_summary(paths["summary_file"], compressed)
+        after_chars = self._compressor.estimate_total_chars(compressed)
+        after_tokens = self._compressor.estimate_total_tokens(compressed)
+        summary_entries = sum(1 for item in compressed if item.memory_type == MemoryType.AGENT_SUMMARY and item.metadata.get("compaction"))
 
         if self._event_bus is not None:
             self._event_bus.emit(
@@ -280,6 +285,9 @@ class MemoryManager:
                     "before": before,
                     "after": len(compressed),
                     "removed": removed,
+                    "before_tokens": before_tokens,
+                    "after_tokens": after_tokens,
+                    "summary_entries": summary_entries,
                 },
             )
 
@@ -288,6 +296,11 @@ class MemoryManager:
             "before": before,
             "after": len(compressed),
             "removed": removed,
+            "before_chars": before_chars,
+            "after_chars": after_chars,
+            "before_tokens": before_tokens,
+            "after_tokens": after_tokens,
+            "summary_entries": summary_entries,
         }
 
     def decay(self, agent_id: str) -> dict[str, Any]:
@@ -334,6 +347,7 @@ class MemoryManager:
 
         total_importance = sum(item.importance for item in entries)
         total_weight = sum(item.weight for item in entries)
+        estimated_tokens = self._compressor.estimate_total_tokens(entries)
         avg_importance = total_importance / len(entries) if entries else 0.0
         avg_weight = total_weight / len(entries) if entries else 0.0
 
@@ -350,6 +364,7 @@ class MemoryManager:
             "by_type": by_type,
             "avg_importance": round(avg_importance, 6),
             "avg_weight": round(avg_weight, 6),
+            "estimated_tokens": estimated_tokens,
             "log_size_bytes": paths["records_file"].stat().st_size if paths["records_file"].exists() else 0,
             "summary_size_bytes": paths["summary_file"].stat().st_size if paths["summary_file"].exists() else 0,
             "summary_preview": summary_text[:1200],
