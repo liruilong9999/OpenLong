@@ -9,6 +9,7 @@ import {
   createSession,
   deleteAgent,
   deleteAgentSkill,
+  deleteWorkspace,
   fetchAgents,
   fetchFileContent,
   fetchFileTree,
@@ -19,6 +20,10 @@ import {
   fetchSkillTemplate,
   fetchSkillsDashboard,
   fetchSystemDashboard,
+  fetchWorkspace,
+  fetchWorkspaces,
+  fetchWorkspaceLogs,
+  fetchWorkspaceTemplates,
   rejectToolApproval,
   reloadAgentSkills,
   resolveApiUrl,
@@ -27,6 +32,9 @@ import {
   saveAgentSkill,
   sendChatMessage,
   assignSessionAgent,
+  backupWorkspace,
+  createWorkspace,
+  restoreWorkspace,
   stopAgent,
   uploadSessionAttachments,
 } from "./api/client";
@@ -340,12 +348,24 @@ function App() {
   const [skillBusyAction, setSkillBusyAction] = useState("");
   const [selectedSkillId, setSelectedSkillId] = useState("");
   const [skillEditorValue, setSkillEditorValue] = useState("");
+  const [workspaceBusyAction, setWorkspaceBusyAction] = useState("");
+  const [workspaceTemplateName, setWorkspaceTemplateName] = useState("default");
+  const [workspaceOverwrite, setWorkspaceOverwrite] = useState(false);
   const [ideScope, setIdeScope] = useState("project");
   const [fileTreeState, setFileTreeState] = useState({ loading: true, error: "", data: null });
   const [selectedFile, setSelectedFile] = useState(null);
   const [originalFileContent, setOriginalFileContent] = useState("");
   const [editedFileContent, setEditedFileContent] = useState("");
   const [savingFile, setSavingFile] = useState(false);
+  const [workspacePanel, setWorkspacePanel] = useState({
+    loading: true,
+    error: "",
+    items: [],
+    templates: [],
+    current: null,
+    logs: [],
+    lastBackupPath: "",
+  });
   const [inspector, setInspector] = useState({
     loading: true,
     error: "",
@@ -385,6 +405,7 @@ function App() {
   useEffect(() => {
     void refreshInspector();
     void refreshFileTree(ideScope);
+    void refreshWorkspacePanel();
   }, [currentAgentId]);
 
   useEffect(() => {
@@ -512,6 +533,37 @@ function App() {
     }
   }
 
+  async function refreshWorkspacePanel() {
+    setWorkspacePanel((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const [items, templatesPayload, currentWorkspace, logsPayload] = await Promise.all([
+        fetchWorkspaces(),
+        fetchWorkspaceTemplates(),
+        fetchWorkspace(currentAgentId),
+        fetchWorkspaceLogs(currentAgentId, 20),
+      ]);
+      const templates = templatesPayload?.templates || [];
+      setWorkspacePanel((current) => ({
+        ...current,
+        loading: false,
+        error: "",
+        items,
+        templates,
+        current: currentWorkspace,
+        logs: logsPayload?.items || [],
+      }));
+      if (!workspaceTemplateName && templates.length) {
+        setWorkspaceTemplateName(templates[0].name);
+      }
+    } catch (error) {
+      setWorkspacePanel((current) => ({
+        ...current,
+        loading: false,
+        error: error.message,
+      }));
+    }
+  }
+
   async function handleAgentChange(nextAgentId) {
     setCurrentAgentId(nextAgentId);
     setSelectedSessionId("");
@@ -578,6 +630,74 @@ function App() {
       setGlobalHint(`删除 Agent 失败：${error.message}`);
     } finally {
       setAgentBusyAction("");
+    }
+  }
+
+  async function handleCreateWorkspace() {
+    setWorkspaceBusyAction(`create:${currentAgentId}`);
+    try {
+      const currentType = workspacePanel.current?.state?.agent_type;
+      const template = workspaceTemplateName || "default";
+      const agentType = currentType || (["coding", "research"].includes(template) ? template : "general");
+      await createWorkspace({
+        agentId: currentAgentId,
+        templateName: template,
+        agentType,
+        overwrite: workspaceOverwrite,
+      });
+      await Promise.all([refreshWorkspacePanel(), refreshAgents(), refreshInspector()]);
+      setGlobalHint(`已创建/更新工作区：${currentAgentId}`);
+    } catch (error) {
+      setGlobalHint(`创建工作区失败：${error.message}`);
+    } finally {
+      setWorkspaceBusyAction("");
+    }
+  }
+
+  async function handleBackupWorkspace() {
+    setWorkspaceBusyAction(`backup:${currentAgentId}`);
+    try {
+      const exportDir = window.prompt("可选：请输入导出目录（留空则使用默认）", "") || "";
+      const payload = await backupWorkspace(currentAgentId, exportDir);
+      setWorkspacePanel((current) => ({ ...current, lastBackupPath: payload.archive_path || "" }));
+      setGlobalHint(`工作区已备份：${payload.archive_path}`);
+    } catch (error) {
+      setGlobalHint(`备份工作区失败：${error.message}`);
+    } finally {
+      setWorkspaceBusyAction("");
+    }
+  }
+
+  async function handleRestoreWorkspace() {
+    const archivePath = window.prompt("请输入备份归档路径", workspacePanel.lastBackupPath || "");
+    if (!archivePath) {
+      return;
+    }
+    setWorkspaceBusyAction(`restore:${currentAgentId}`);
+    try {
+      await restoreWorkspace(currentAgentId, archivePath, workspaceOverwrite);
+      await Promise.all([refreshWorkspacePanel(), refreshAgents(), refreshInspector()]);
+      setGlobalHint(`工作区已恢复：${archivePath}`);
+    } catch (error) {
+      setGlobalHint(`恢复工作区失败：${error.message}`);
+    } finally {
+      setWorkspaceBusyAction("");
+    }
+  }
+
+  async function handleDeleteWorkspace() {
+    if (!window.confirm(`确认删除工作区 ${currentAgentId} 吗？`)) {
+      return;
+    }
+    setWorkspaceBusyAction(`delete:${currentAgentId}`);
+    try {
+      await deleteWorkspace(currentAgentId, true);
+      await Promise.all([refreshWorkspacePanel(), refreshAgents(), refreshInspector()]);
+      setGlobalHint(`已删除工作区：${currentAgentId}`);
+    } catch (error) {
+      setGlobalHint(`删除工作区失败：${error.message}`);
+    } finally {
+      setWorkspaceBusyAction("");
     }
   }
 
@@ -1317,6 +1437,86 @@ function App() {
                     <div className="mini-card-text"><RichMarkdownText content={item.content} /></div>
                   </div>
                 ))}
+              </div>
+            </>
+          )}
+        </InspectorSection>
+
+        <InspectorSection title="Workspace 管理">
+          {workspacePanel.loading && <div className="panel-hint">正在加载工作区…</div>}
+          {workspacePanel.error && <div className="panel-hint error">{workspacePanel.error}</div>}
+          {!workspacePanel.loading && !workspacePanel.error && (
+            <>
+              <div className="agent-action-row">
+                <select value={workspaceTemplateName} onChange={(event) => setWorkspaceTemplateName(event.target.value)}>
+                  {(workspacePanel.templates || []).map((item) => (
+                    <option key={item.name} value={item.name}>{item.name}</option>
+                  ))}
+                </select>
+                <label className="workspace-inline-check">
+                  <input type="checkbox" checked={workspaceOverwrite} onChange={(event) => setWorkspaceOverwrite(event.target.checked)} />
+                  覆盖
+                </label>
+              </div>
+
+              <div className="agent-action-row">
+                <button type="button" onClick={handleCreateWorkspace} disabled={workspaceBusyAction.startsWith("create:")}>创建/更新</button>
+                <button type="button" onClick={handleBackupWorkspace} disabled={workspaceBusyAction.startsWith("backup:")}>备份</button>
+                <button type="button" onClick={handleRestoreWorkspace} disabled={workspaceBusyAction.startsWith("restore:")}>恢复</button>
+                <button type="button" onClick={refreshWorkspacePanel}>刷新</button>
+                <button type="button" onClick={handleDeleteWorkspace} disabled={currentAgentId === DEFAULT_AGENT_ID || workspaceBusyAction.startsWith("delete:")}>删除</button>
+              </div>
+
+              {!!workspacePanel.current && (
+                <div className="workspace-manager-grid">
+                  <div className="mini-card">
+                    <div className="mini-card-title">当前工作区</div>
+                    <div className="mini-card-text">
+                      <div>路径：{workspacePanel.current.path}</div>
+                      <div>模板：{workspacePanel.current.metadata?.template_name || "default"}</div>
+                      <div>Bootstrap：{workspacePanel.current.bootstrap_pending ? "待完成" : "已完成"}</div>
+                    </div>
+                  </div>
+
+                  <div className="mini-card">
+                    <div className="mini-card-title">Metadata</div>
+                    <div className="workspace-json-block"><code>{JSON.stringify(workspacePanel.current.metadata || {}, null, 2)}</code></div>
+                  </div>
+
+                  <div className="mini-card">
+                    <div className="mini-card-title">State</div>
+                    <div className="workspace-json-block"><code>{JSON.stringify(workspacePanel.current.state || {}, null, 2)}</code></div>
+                  </div>
+                </div>
+              )}
+
+              {!!workspacePanel.lastBackupPath && <div className="panel-hint">最近备份：{workspacePanel.lastBackupPath}</div>}
+
+              <div className="mini-card">
+                <div className="mini-card-title">Workspace 列表</div>
+                <div className="stack-list">
+                  {(workspacePanel.items || []).map((item) => (
+                    <div key={item.agent_id} className="mini-card-text">
+                      <strong>{item.agent_id}</strong> · {item.metadata?.template_name || "default"} · {item.state?.agent_type || "general"}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mini-card">
+                <div className="mini-card-title">Workspace 日志</div>
+                <div className="workspace-log-list">
+                  {(workspacePanel.logs || []).length ? (
+                    workspacePanel.logs.map((item, index) => (
+                      <div key={`${item.timestamp || index}-${index}`} className="workspace-log-item">
+                        <div><strong>{item.event_name}</strong> · {formatTime(item.timestamp)}</div>
+                        <div>{item.message}</div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="panel-hint">暂无工作区日志。</div>
+                  )}
+                </div>
               </div>
             </>
           )}

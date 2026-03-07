@@ -72,6 +72,64 @@ export async function fetchSessions() {
 }
 
 
+export async function fetchWorkspaces() {
+  return requestJson("/workspaces");
+}
+
+
+export async function fetchWorkspaceTemplates() {
+  return requestJson("/workspaces/templates");
+}
+
+
+export async function fetchWorkspace(agentId = "main") {
+  return requestJson(`/workspaces/${agentId}`);
+}
+
+
+export async function createWorkspace({ agentId, templateName = "default", agentType = "general", overwrite = false }) {
+  return requestJson(`/workspaces/${agentId}`, {
+    method: "POST",
+    body: JSON.stringify({
+      template_name: templateName,
+      agent_type: agentType,
+      overwrite,
+    }),
+  });
+}
+
+
+export async function deleteWorkspace(agentId, force = false) {
+  const query = new URLSearchParams({ force: String(force) });
+  return requestJson(`/workspaces/${agentId}?${query.toString()}`, {
+    method: "DELETE",
+  });
+}
+
+
+export async function fetchWorkspaceLogs(agentId = "main", limit = 50) {
+  return requestJson(`/workspaces/${agentId}/logs?limit=${limit}`);
+}
+
+
+export async function backupWorkspace(agentId = "main", exportDir = "") {
+  return requestJson(`/workspaces/${agentId}/backup`, {
+    method: "POST",
+    body: JSON.stringify({ export_dir: exportDir || null }),
+    timeoutMs: 30000,
+  });
+}
+
+
+export async function restoreWorkspace(agentId = "main", archivePath, overwrite = false) {
+  return requestJson(`/workspaces/${agentId}/restore`, {
+    method: "POST",
+    body: JSON.stringify({ archive_path: archivePath, overwrite }),
+    timeoutMs: 30000,
+  });
+}
+
+
 export async function fetchAgents() {
   return requestJson("/dashboard/agents");
 }

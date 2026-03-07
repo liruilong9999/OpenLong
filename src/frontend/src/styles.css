@@ -251,6 +251,48 @@ button {
   line-height: 1.6;
 }
 
+.workspace-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-soft);
+}
+
+.workspace-manager-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.workspace-json-block {
+  max-height: 180px;
+  overflow: auto;
+  background: rgba(8, 12, 22, 0.92);
+  border-radius: 12px;
+  padding: 12px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: #dce8ff;
+}
+
+.workspace-log-list {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.workspace-log-item {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .sidebar-title,
 .inspector-title {
   font-size: 14px;
