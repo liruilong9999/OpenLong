@@ -271,12 +271,36 @@ class GatewayRuntime:
             overwrite=overwrite,
         )
         self.agent_runtime.get_or_create(agent_id, agent_type=agent_type)
+        self.agent_manager.create_agent(agent_id)
         self._sync_workspace_runtime_docs(agent_id)
         self.event_bus.emit(
             "workspace.created",
             {"agent_id": agent_id, "template_name": template_name},
         )
         return snapshot
+
+    def create_agent(
+        self,
+        *,
+        agent_id: str,
+        template_name: str = "default",
+        agent_type: str = "general",
+    ) -> dict[str, Any]:
+        self.create_workspace(
+            agent_id=agent_id,
+            template_name=template_name,
+            agent_type=agent_type,
+            overwrite=False,
+        )
+        record = self.agent_manager.create_agent(agent_id)
+        return {
+            "agent_id": record.agent_id,
+            "status": record.status.value,
+            "created_at": record.created_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+            "template_name": template_name,
+            "agent_type": agent_type,
+        }
 
     def delete_workspace(self, agent_id: str, force: bool = False) -> dict[str, Any]:
         result = self.workspace_manager.delete_workspace(agent_id=agent_id, force=force)
@@ -285,6 +309,20 @@ class GatewayRuntime:
             self.agent_runtime.remove(agent_id)
             self.event_bus.emit("workspace.deleted", {"agent_id": agent_id})
         return result
+
+    def delete_agent(self, agent_id: str) -> dict[str, Any]:
+        if agent_id == "main":
+            return {"deleted": False, "reason": "main agent cannot be deleted"}
+
+        stopped, message = self.agent_manager.stop_agent(agent_id=agent_id, force=True)
+        if not stopped:
+            return {"deleted": False, "reason": message}
+
+        result = self.delete_workspace(agent_id=agent_id, force=True)
+        if not result.get("deleted"):
+            return {"deleted": False, "reason": result.get("reason", "workspace delete failed")}
+
+        return {"deleted": True, "agent_id": agent_id}
 
     def export_workspace(self, agent_id: str, export_dir: str | None = None) -> dict[str, Any]:
         result = self.workspace_manager.export_workspace(agent_id=agent_id, export_dir=export_dir)

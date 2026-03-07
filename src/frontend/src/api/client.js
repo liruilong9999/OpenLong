@@ -72,6 +72,46 @@ export async function fetchSessions() {
 }
 
 
+export async function fetchAgents() {
+  return requestJson("/dashboard/agents");
+}
+
+
+export async function createAgent({ agentId, templateName = "default", agentType = "general" }) {
+  return requestJson("/agents", {
+    method: "POST",
+    body: JSON.stringify({
+      agent_id: agentId,
+      template_name: templateName,
+      agent_type: agentType,
+    }),
+  });
+}
+
+
+export async function stopAgent(agentId, force = false) {
+  return requestJson(`/agents/${agentId}/stop`, {
+    method: "POST",
+    body: JSON.stringify({ force }),
+  });
+}
+
+
+export async function deleteAgent(agentId) {
+  return requestJson(`/agents/${agentId}`, {
+    method: "DELETE",
+  });
+}
+
+
+export async function assignSessionAgent(sessionId, agentId) {
+  return requestJson(`/sessions/${sessionId}/assign-agent`, {
+    method: "POST",
+    body: JSON.stringify({ agent_id: agentId }),
+  });
+}
+
+
 export async function createSession(agentId = "main") {
   return requestJson("/sessions", {
     method: "POST",

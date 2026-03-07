@@ -4,8 +4,11 @@ import remarkGfm from "remark-gfm";
 import {
   approveToolApproval,
   checkHealth,
+  createAgent,
   createChatSocket,
   createSession,
+  deleteAgent,
+  fetchAgents,
   fetchFileContent,
   fetchFileTree,
   fetchAgentContext,
@@ -19,6 +22,8 @@ import {
   runShellCommand,
   saveFileContent,
   sendChatMessage,
+  assignSessionAgent,
+  stopAgent,
   uploadSessionAttachments,
 } from "./api/client";
 import CodeEditorPanel from "./components/CodeEditorPanel";
@@ -26,7 +31,7 @@ import FileExplorer from "./components/FileExplorer";
 import TerminalPanel from "./components/TerminalPanel";
 
 
-const AGENT_ID = "main";
+const DEFAULT_AGENT_ID = "main";
 const SESSION_TITLE_STORAGE_KEY = "openlong.session_titles";
 
 
@@ -313,6 +318,8 @@ async function copyText(text) {
 function App() {
   const [health, setHealth] = useState({ status: "checking" });
   const [socketStatus, setSocketStatus] = useState("idle");
+  const [agents, setAgents] = useState([]);
+  const [currentAgentId, setCurrentAgentId] = useState(DEFAULT_AGENT_ID);
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [messages, setMessages] = useState([]);
@@ -325,6 +332,7 @@ function App() {
   const [sessionTitles, setSessionTitles] = useState(() => loadStoredTitles());
   const [approvalBusyId, setApprovalBusyId] = useState("");
   const [liveShellLines, setLiveShellLines] = useState([]);
+  const [agentBusyAction, setAgentBusyAction] = useState("");
   const [ideScope, setIdeScope] = useState("project");
   const [fileTreeState, setFileTreeState] = useState({ loading: true, error: "", data: null });
   const [selectedFile, setSelectedFile] = useState(null);
@@ -349,7 +357,8 @@ function App() {
 
   useEffect(() => {
     const initialize = async () => {
-      await Promise.all([refreshHealth(), refreshSessions(true), refreshInspector()]);
+      await Promise.all([refreshHealth(), refreshAgents(), refreshSessions(true)]);
+      await refreshInspector();
     };
 
     initialize();
@@ -366,6 +375,11 @@ function App() {
     messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
   }, [messages]);
 
+  useEffect(() => {
+    void refreshInspector();
+    void refreshFileTree(ideScope);
+  }, [currentAgentId]);
+
   const selectedSession = useMemo(
     () => sessions.find((item) => item.session_id === selectedSessionId) || null,
     [sessions, selectedSessionId]
@@ -374,14 +388,14 @@ function App() {
   const filteredSessions = useMemo(() => {
     const query = searchText.trim().toLowerCase();
     if (!query) {
-      return sessions;
+      return agentSessions;
     }
 
-    return sessions.filter((item) => {
+    return agentSessions.filter((item) => {
       const title = sessionTitles[item.session_id] || "";
       return item.session_id.toLowerCase().includes(query) || title.toLowerCase().includes(query);
     });
-  }, [searchText, sessionTitles, sessions]);
+  }, [agentSessions, searchText, sessionTitles]);
 
   const memoryItems = useMemo(
     () => dedupeMemoryItems(inspector.memory?.recent_items || []).slice(0, 4),
@@ -389,6 +403,14 @@ function App() {
   );
   const approvalItems = useMemo(() => inspector.system?.tool_approvals?.items || [], [inspector.system]);
   const shellLogItems = useMemo(() => inspector.system?.shell_logs?.items || [], [inspector.system]);
+  const currentAgent = useMemo(
+    () => agents.find((item) => item.agent_id === currentAgentId) || null,
+    [agents, currentAgentId]
+  );
+  const agentSessions = useMemo(
+    () => sessions.filter((item) => item.agent_id === currentAgentId),
+    [sessions, currentAgentId]
+  );
 
   const hasConversation = messages.some((item) => item.role === "user" || item.role === "assistant");
 
@@ -401,12 +423,24 @@ function App() {
     }
   }
 
+  async function refreshAgents() {
+    try {
+      const data = await fetchAgents();
+      setAgents(data);
+      if (!data.some((item) => item.agent_id === currentAgentId)) {
+        setCurrentAgentId(data[0]?.agent_id || DEFAULT_AGENT_ID);
+      }
+    } catch (error) {
+      setGlobalHint(`读取 Agent 失败：${error.message}`);
+    }
+  }
+
   async function refreshInspector() {
     try {
       const [context, memory, skills, system] = await Promise.all([
-        fetchAgentContext(AGENT_ID),
-        fetchMemoryDashboard(AGENT_ID),
-        fetchSkillsDashboard(AGENT_ID),
+        fetchAgentContext(currentAgentId),
+        fetchMemoryDashboard(currentAgentId),
+        fetchSkillsDashboard(currentAgentId),
         fetchSystemDashboard(),
       ]);
 
@@ -438,6 +472,93 @@ function App() {
       }
     } catch (error) {
       setGlobalHint(`读取会话失败：${error.message}`);
+    }
+  }
+
+  async function handleAgentChange(nextAgentId) {
+    setCurrentAgentId(nextAgentId);
+    setSelectedSessionId("");
+    setMessages([]);
+    setLiveShellLines([]);
+  }
+
+  async function handleCreateAgent() {
+    const agentId = window.prompt("请输入新的 Agent ID（例如 coding / research）");
+    if (!agentId) {
+      return;
+    }
+    const agentType = window.prompt("请输入 Agent 类型（general / coding / research）", "coding") || "coding";
+    const templateName = ["coding", "research"].includes(agentType) ? agentType : "default";
+    setAgentBusyAction(`create:${agentId}`);
+    try {
+      await createAgent({ agentId, agentType, templateName });
+      await Promise.all([refreshAgents(), refreshSessions(false)]);
+      setCurrentAgentId(agentId);
+      setSelectedSessionId("");
+      setMessages([]);
+      setGlobalHint(`已创建 Agent：${agentId}`);
+    } catch (error) {
+      setGlobalHint(`创建 Agent 失败：${error.message}`);
+    } finally {
+      setAgentBusyAction("");
+    }
+  }
+
+  async function handleStopCurrentAgent() {
+    if (!currentAgentId || currentAgentId === DEFAULT_AGENT_ID) {
+      setGlobalHint("main Agent 不建议停止");
+      return;
+    }
+    setAgentBusyAction(`stop:${currentAgentId}`);
+    try {
+      await stopAgent(currentAgentId, true);
+      await Promise.all([refreshAgents(), refreshSessions(false)]);
+      setGlobalHint(`已停止 Agent：${currentAgentId}`);
+    } catch (error) {
+      setGlobalHint(`停止 Agent 失败：${error.message}`);
+    } finally {
+      setAgentBusyAction("");
+    }
+  }
+
+  async function handleDeleteCurrentAgent() {
+    if (!currentAgentId || currentAgentId === DEFAULT_AGENT_ID) {
+      setGlobalHint("main Agent 不能删除");
+      return;
+    }
+    if (!window.confirm(`确认删除 Agent ${currentAgentId} 吗？`)) {
+      return;
+    }
+    setAgentBusyAction(`delete:${currentAgentId}`);
+    try {
+      await deleteAgent(currentAgentId);
+      await Promise.all([refreshAgents(), refreshSessions(false)]);
+      setCurrentAgentId(DEFAULT_AGENT_ID);
+      setSelectedSessionId("");
+      setMessages([]);
+      setGlobalHint(`已删除 Agent：${currentAgentId}`);
+    } catch (error) {
+      setGlobalHint(`删除 Agent 失败：${error.message}`);
+    } finally {
+      setAgentBusyAction("");
+    }
+  }
+
+  async function handleAssignSelectedSession() {
+    if (!selectedSessionId) {
+      setGlobalHint("请先选择一个会话");
+      return;
+    }
+    setAgentBusyAction(`assign:${selectedSessionId}`);
+    try {
+      await assignSessionAgent(selectedSessionId, currentAgentId);
+      await refreshSessions(false);
+      await openSession(selectedSessionId);
+      setGlobalHint(`已将当前会话绑定到 Agent：${currentAgentId}`);
+    } catch (error) {
+      setGlobalHint(`绑定会话失败：${error.message}`);
+    } finally {
+      setAgentBusyAction("");
     }
   }
 
@@ -507,6 +628,11 @@ function App() {
       return;
     }
 
+    const snapshot = sessions.find((item) => item.session_id === sessionId);
+    if (snapshot?.agent_id) {
+      setCurrentAgentId(snapshot.agent_id);
+    }
+
     setSelectedSessionId(sessionId);
     setLoadingHistory(true);
     setGlobalHint("");
@@ -546,7 +672,7 @@ function App() {
     setGlobalHint("");
 
     try {
-      const snapshot = await createSession(AGENT_ID);
+      const snapshot = await createSession(currentAgentId);
       const sessionId = snapshot.session_id;
       setSelectedSessionId(sessionId);
       setMessages([]);
@@ -563,7 +689,7 @@ function App() {
       return selectedSessionId;
     }
 
-    const snapshot = await createSession(AGENT_ID);
+    const snapshot = await createSession(currentAgentId);
     const sessionId = snapshot.session_id;
     setSelectedSessionId(sessionId);
     setSessions((current) => sortSessions([snapshot, ...current.filter((item) => item.session_id !== sessionId)]));
@@ -589,7 +715,7 @@ function App() {
   async function refreshFileTree(scope = ideScope) {
     setFileTreeState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const data = await fetchFileTree({ agentId: AGENT_ID, scope, maxDepth: 5 });
+      const data = await fetchFileTree({ agentId: currentAgentId, scope, maxDepth: 5 });
       setFileTreeState({ loading: false, error: "", data });
     } catch (error) {
       setFileTreeState({ loading: false, error: error.message, data: null });
@@ -601,7 +727,7 @@ function App() {
       return;
     }
     try {
-      const payload = await fetchFileContent({ path: node.path, agentId: AGENT_ID, scope: ideScope });
+      const payload = await fetchFileContent({ path: node.path, agentId: currentAgentId, scope: ideScope });
       setSelectedFile({ path: node.path, scope: payload.scope });
       setOriginalFileContent(payload.content || "");
       setEditedFileContent(payload.content || "");
@@ -620,7 +746,7 @@ function App() {
       await saveFileContent({
         path: selectedFile.path,
         content: editedFileContent,
-        agentId: AGENT_ID,
+        agentId: currentAgentId,
         scope: selectedFile.scope,
       });
       setOriginalFileContent(editedFileContent);
@@ -654,7 +780,7 @@ function App() {
         cwd,
         cwdScope,
         sessionId,
-        agentId: AGENT_ID,
+        agentId: currentAgentId,
         confirm: false,
       });
       if (payload?.data?.pending_approval) {
@@ -687,7 +813,7 @@ function App() {
     const payload = await uploadSessionAttachments({
       sessionId,
       files: fileList,
-      agentId: AGENT_ID,
+      agentId: currentAgentId,
     });
     await Promise.all([refreshSessions(false), refreshInspector()]);
     return (payload.items || []).map((item) => normalizeUploadedAttachment(item));
@@ -736,7 +862,7 @@ function App() {
       const result = await sendChatMessage({
         sessionId,
         message: outgoingMessage,
-        agentId: AGENT_ID,
+        agentId: currentAgentId,
         attachments: attachments.map((item) => ({
           filename: item.name,
           saved_name: item.savedName,
@@ -790,6 +916,26 @@ function App() {
           </button>
         </div>
 
+        <div className="agent-switcher-block">
+          <div className="sidebar-title">当前 Agent</div>
+          <select value={currentAgentId} onChange={(event) => handleAgentChange(event.target.value)}>
+            {agents.map((item) => (
+              <option key={item.agent_id} value={item.agent_id}>
+                {item.agent_id} · {item.status}
+              </option>
+            ))}
+          </select>
+          <div className="agent-action-row">
+            <button type="button" onClick={handleCreateAgent} disabled={agentBusyAction.startsWith("create:")}>新建</button>
+            <button type="button" onClick={handleStopCurrentAgent} disabled={!currentAgent || currentAgentId === DEFAULT_AGENT_ID || agentBusyAction.startsWith("stop:")}>停止</button>
+            <button type="button" onClick={handleDeleteCurrentAgent} disabled={!currentAgent || currentAgentId === DEFAULT_AGENT_ID || agentBusyAction.startsWith("delete:")}>删除</button>
+          </div>
+          <div className="agent-meta-list">
+            <div className="metric-row"><span>状态</span><strong>{currentAgent?.status || "unknown"}</strong></div>
+            <div className="metric-row"><span>活跃会话</span><strong>{currentAgent?.active_sessions ?? 0}</strong></div>
+          </div>
+        </div>
+
         <div className="shortcut-list">
           <button className="shortcut-item" onClick={() => refreshSessions(false)}>
             <span className="shortcut-icon">⌕</span>
@@ -805,7 +951,7 @@ function App() {
           </div>
           <div className="shortcut-item static">
             <span className="shortcut-icon">⌂</span>
-            <span>工作区 {AGENT_ID}</span>
+            <span>工作区 {currentAgentId}</span>
           </div>
         </div>
 
@@ -847,11 +993,14 @@ function App() {
           <div>
             <div className="workspace-title">OpenLong</div>
             <div className="workspace-subtitle">
-              {selectedSession ? (sessionTitles[selectedSession.session_id] || selectedSession.session_id) : "开始一段新的对话"}
+              {selectedSession ? `${sessionTitles[selectedSession.session_id] || selectedSession.session_id} · Agent ${selectedSession.agent_id}` : `开始一段新的对话 · Agent ${currentAgentId}`}
             </div>
           </div>
 
           <div className="status-group">
+            {!!selectedSession && selectedSession.agent_id !== currentAgentId && (
+              <button type="button" onClick={handleAssignSelectedSession} disabled={agentBusyAction.startsWith("assign:")}>绑定到当前 Agent</button>
+            )}
             <span className={`status-pill ${health.status === "ok" ? "ok" : "warn"}`}>
               {resolveHealthLabel(health)}
             </span>
@@ -1033,8 +1182,9 @@ function App() {
         </InspectorSection>
 
         <InspectorSection title="其它（运行信息）">
-          <div className="metric-row"><span>会话</span><strong>{sessions.length}</strong></div>
+          <div className="metric-row"><span>会话</span><strong>{agentSessions.length}</strong></div>
           <div className="metric-row"><span>当前会话</span><strong>{selectedSessionId ? selectedSessionId.slice(0, 8) : "未选择"}</strong></div>
+          <div className="metric-row"><span>当前 Agent</span><strong>{currentAgentId}</strong></div>
           <div className="metric-row"><span>API Key</span><strong>{String(health.key_configured || false)}</strong></div>
           <div className="metric-row"><span>任务队列</span><strong>{inspector.system?.task_queue?.total ?? 0}</strong></div>
           <div className="metric-row"><span>待审批命令</span><strong>{inspector.system?.tool_approvals?.stats?.pending ?? 0}</strong></div>

@@ -53,6 +53,8 @@ class WorkspaceRestoreRequest(BaseModel):
 
 class AgentCreateRequest(BaseModel):
     agent_id: str = Field(min_length=1)
+    template_name: str = Field(default="default")
+    agent_type: str = Field(default="general")
 
 
 class AgentStopRequest(BaseModel):
@@ -352,13 +354,18 @@ def build_api_router() -> APIRouter:
 
     @router.post("/agents")
     async def create_agent(body: AgentCreateRequest, request: Request) -> dict[str, Any]:
-        record = request.app.state.runtime.agent_manager.create_agent(body.agent_id)
-        return {
-            "agent_id": record.agent_id,
-            "status": record.status.value,
-            "created_at": record.created_at.isoformat(),
-            "updated_at": record.updated_at.isoformat(),
-        }
+        return request.app.state.runtime.create_agent(
+            agent_id=body.agent_id,
+            template_name=body.template_name,
+            agent_type=body.agent_type,
+        )
+
+    @router.delete("/agents/{agent_id}")
+    async def delete_agent(agent_id: str, request: Request) -> dict[str, Any]:
+        result = request.app.state.runtime.delete_agent(agent_id=agent_id)
+        if not result.get("deleted"):
+            raise HTTPException(status_code=400, detail=result.get("reason", "agent delete failed"))
+        return result
 
     @router.get("/agents/{agent_id}/context")
     async def get_agent_context(agent_id: str, request: Request, force_refresh: bool = False) -> dict[str, Any]:

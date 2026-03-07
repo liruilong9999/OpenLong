@@ -181,6 +181,29 @@ button {
   color: var(--text-faint);
 }
 
+.agent-switcher-block {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-switcher-block select {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.agent-action-row {
+  display: flex;
+  gap: 8px;
+}
+
+.agent-meta-list {
+  display: grid;
+  gap: 6px;
+}
+
 .sidebar-title,
 .inspector-title {
   font-size: 14px;

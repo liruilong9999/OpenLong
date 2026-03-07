@@ -1,4 +1,5 @@
-﻿from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient
+from uuid import uuid4
 
 from app.main import create_app
 
@@ -87,3 +88,35 @@ def test_gateway_tool_task_and_websocket() -> None:
         reply = _recv_until_reply(ws)
         assert reply["session_id"] == "ws-test"
         assert reply["reply"]
+
+
+def test_multi_agent_create_assign_stop_and_delete() -> None:
+    client = TestClient(create_app())
+    session_id = f"agent-s1-{uuid4().hex[:8]}"
+
+    create_agent_resp = client.post(
+        "/agents",
+        json={"agent_id": "coding", "template_name": "coding", "agent_type": "coding"},
+    )
+    assert create_agent_resp.status_code == 200
+    assert create_agent_resp.json()["agent_id"] == "coding"
+
+    agents_resp = client.get("/dashboard/agents")
+    assert agents_resp.status_code == 200
+    assert any(item["agent_id"] == "coding" for item in agents_resp.json())
+
+    session_resp = client.post("/sessions", json={"session_id": session_id, "agent_id": "coding"})
+    assert session_resp.status_code == 200
+    assert session_resp.json()["agent_id"] == "coding"
+
+    assign_resp = client.post(f"/sessions/{session_id}/assign-agent", json={"agent_id": "main"})
+    assert assign_resp.status_code == 200
+    assert assign_resp.json()["agent_id"] == "main"
+
+    stop_resp = client.post("/agents/coding/stop", json={"force": True})
+    assert stop_resp.status_code == 200
+    assert stop_resp.json()["stopped"] is True
+
+    delete_resp = client.delete("/agents/coding")
+    assert delete_resp.status_code == 200
+    assert delete_resp.json()["deleted"] is True
