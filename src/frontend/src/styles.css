@@ -204,6 +204,53 @@ button {
   gap: 6px;
 }
 
+.skill-manager-grid {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.skill-list-panel {
+  display: grid;
+  gap: 8px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.skill-list-item {
+  width: 100%;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.skill-list-item.active,
+.skill-list-item:hover {
+  background: rgba(122, 162, 255, 0.12);
+}
+
+.skill-editor-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.skill-editor-textarea {
+  min-height: 300px;
+  resize: vertical;
+  width: 100%;
+  background: rgba(8, 12, 22, 0.92);
+  color: #dce8ff;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 14px;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .sidebar-title,
 .inspector-title {
   font-size: 14px;

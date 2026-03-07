@@ -51,6 +51,7 @@ class SkillSpec:
             "examples": list(self.examples),
             "path": str(self.path),
             "mtime_ns": self.mtime_ns,
+            "raw_markdown": self.raw_markdown,
             "plugin_id": self.plugin_id,
             "plugin_name": self.plugin_name,
             "plugin_enabled": self.plugin_enabled,

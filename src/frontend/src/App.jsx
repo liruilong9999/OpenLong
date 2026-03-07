@@ -8,6 +8,7 @@ import {
   createChatSocket,
   createSession,
   deleteAgent,
+  deleteAgentSkill,
   fetchAgents,
   fetchFileContent,
   fetchFileTree,
@@ -15,12 +16,15 @@ import {
   fetchMemoryDashboard,
   fetchSessionHistory,
   fetchSessions,
+  fetchSkillTemplate,
   fetchSkillsDashboard,
   fetchSystemDashboard,
   rejectToolApproval,
+  reloadAgentSkills,
   resolveApiUrl,
   runShellCommand,
   saveFileContent,
+  saveAgentSkill,
   sendChatMessage,
   assignSessionAgent,
   stopAgent,
@@ -333,6 +337,9 @@ function App() {
   const [approvalBusyId, setApprovalBusyId] = useState("");
   const [liveShellLines, setLiveShellLines] = useState([]);
   const [agentBusyAction, setAgentBusyAction] = useState("");
+  const [skillBusyAction, setSkillBusyAction] = useState("");
+  const [selectedSkillId, setSelectedSkillId] = useState("");
+  const [skillEditorValue, setSkillEditorValue] = useState("");
   const [ideScope, setIdeScope] = useState("project");
   const [fileTreeState, setFileTreeState] = useState({ loading: true, error: "", data: null });
   const [selectedFile, setSelectedFile] = useState(null);
@@ -380,6 +387,31 @@ function App() {
     void refreshFileTree(ideScope);
   }, [currentAgentId]);
 
+  useEffect(() => {
+    if (!skillItems.length) {
+      if (!selectedSkillId) {
+        setSelectedSkillId("");
+        setSkillEditorValue("");
+      }
+      return;
+    }
+
+    if (!selectedSkillId || !skillItems.some((item) => item.skill_id === selectedSkillId)) {
+      if (selectedSkillId && String(skillEditorValue || "").trim()) {
+        return;
+      }
+      const firstEditable = skillItems.find((item) => !item.plugin_id) || skillItems[0];
+      setSelectedSkillId(firstEditable.skill_id);
+      setSkillEditorValue("");
+    }
+  }, [selectedSkillId, skillEditorValue, skillItems]);
+
+  useEffect(() => {
+    if (selectedSkill) {
+      setSkillEditorValue(selectedSkill.markdown || selectedSkill.raw_markdown || "");
+    }
+  }, [selectedSkill?.skill_id, selectedSkill?.mtime_ns]);
+
   const selectedSession = useMemo(
     () => sessions.find((item) => item.session_id === selectedSessionId) || null,
     [sessions, selectedSessionId]
@@ -403,6 +435,7 @@ function App() {
   );
   const approvalItems = useMemo(() => inspector.system?.tool_approvals?.items || [], [inspector.system]);
   const shellLogItems = useMemo(() => inspector.system?.shell_logs?.items || [], [inspector.system]);
+  const skillItems = useMemo(() => inspector.skills?.skills || [], [inspector.skills]);
   const currentAgent = useMemo(
     () => agents.find((item) => item.agent_id === currentAgentId) || null,
     [agents, currentAgentId]
@@ -410,6 +443,10 @@ function App() {
   const agentSessions = useMemo(
     () => sessions.filter((item) => item.agent_id === currentAgentId),
     [sessions, currentAgentId]
+  );
+  const selectedSkill = useMemo(
+    () => skillItems.find((item) => item.skill_id === selectedSkillId) || null,
+    [selectedSkillId, skillItems]
   );
 
   const hasConversation = messages.some((item) => item.role === "user" || item.role === "assistant");
@@ -541,6 +578,79 @@ function App() {
       setGlobalHint(`删除 Agent 失败：${error.message}`);
     } finally {
       setAgentBusyAction("");
+    }
+  }
+
+  async function handleCreateSkill() {
+    const skillId = window.prompt("请输入新的 Skill ID（例如 readme_helper）");
+    if (!skillId) {
+      return;
+    }
+    setSkillBusyAction(`template:${skillId}`);
+    try {
+      const payload = await fetchSkillTemplate(currentAgentId, skillId);
+      setSelectedSkillId(skillId);
+      setSkillEditorValue(payload.template || "");
+      setGlobalHint(`已加载技能模板：${skillId}`);
+    } catch (error) {
+      setGlobalHint(`加载技能模板失败：${error.message}`);
+    } finally {
+      setSkillBusyAction("");
+    }
+  }
+
+  async function handleReloadSkills() {
+    setSkillBusyAction("reload");
+    try {
+      await reloadAgentSkills(currentAgentId);
+      await refreshInspector();
+      setGlobalHint(`已重载 Agent ${currentAgentId} 的技能`);
+    } catch (error) {
+      setGlobalHint(`重载技能失败：${error.message}`);
+    } finally {
+      setSkillBusyAction("");
+    }
+  }
+
+  async function handleSaveSkill() {
+    if (!selectedSkillId) {
+      setGlobalHint("请先选择技能或创建模板");
+      return;
+    }
+    setSkillBusyAction(`save:${selectedSkillId}`);
+    try {
+      await saveAgentSkill({
+        agentId: currentAgentId,
+        skillId: selectedSkillId,
+        markdown: skillEditorValue,
+      });
+      await refreshInspector();
+      setGlobalHint(`已保存技能：${selectedSkillId}`);
+    } catch (error) {
+      setGlobalHint(`保存技能失败：${error.message}`);
+    } finally {
+      setSkillBusyAction("");
+    }
+  }
+
+  async function handleDeleteSkill(skillId) {
+    if (!skillId) {
+      return;
+    }
+    if (!window.confirm(`确认删除技能 ${skillId} 吗？`)) {
+      return;
+    }
+    setSkillBusyAction(`delete:${skillId}`);
+    try {
+      await deleteAgentSkill(currentAgentId, skillId);
+      await refreshInspector();
+      setSelectedSkillId("");
+      setSkillEditorValue("");
+      setGlobalHint(`已删除技能：${skillId}`);
+    } catch (error) {
+      setGlobalHint(`删除技能失败：${error.message}`);
+    } finally {
+      setSkillBusyAction("");
     }
   }
 
@@ -1134,14 +1244,53 @@ function App() {
                 <span>技能数</span>
                 <strong>{inspector.skills?.count ?? 0}</strong>
               </div>
-              {(inspector.skills?.skills || []).slice(0, 4).map((skill) => (
-                <div key={skill.skill_id} className="mini-card">
-                  <div className="mini-card-title">{skill.name}</div>
-                  <div className="mini-card-text">{skill.description || "暂无说明"}</div>
-                  {!!skill.triggers?.length && <div className="mini-tags">触发词：{skill.triggers.join("、")}</div>}
+              <div className="agent-action-row">
+                <button type="button" onClick={handleCreateSkill} disabled={skillBusyAction.startsWith("template:")}>新建模板</button>
+                <button type="button" onClick={handleReloadSkills} disabled={skillBusyAction === "reload"}>重载技能</button>
+                <button type="button" onClick={handleSaveSkill} disabled={!selectedSkillId || skillBusyAction.startsWith("save:")}>保存技能</button>
+                <button type="button" onClick={() => handleDeleteSkill(selectedSkillId)} disabled={!selectedSkill || !!selectedSkill?.plugin_id || skillBusyAction.startsWith("delete:")}>删除技能</button>
+              </div>
+
+              {!!skillItems.length && (
+                <div className="skill-manager-grid">
+                  <div className="skill-list-panel">
+                    {skillItems.map((skill) => (
+                      <button
+                        key={skill.skill_id}
+                        type="button"
+                        className={`skill-list-item ${skill.skill_id === selectedSkillId ? "active" : ""}`}
+                        onClick={() => setSelectedSkillId(skill.skill_id)}
+                      >
+                        <div className="mini-card-title">{skill.name}</div>
+                        <div className="mini-card-text">{skill.description || "暂无说明"}</div>
+                        <div className="mini-tags">触发词：{(skill.triggers || []).join("、") || "暂无"}</div>
+                        <div className="mini-tags">参数：{(skill.parameters || []).map((item) => item.name).join("、") || "暂无"}</div>
+                        <div className="mini-tags">更新时间：{formatTime(skill.mtime_ns ? Math.floor(skill.mtime_ns / 1_000_000) : "")}</div>
+                        {!!skill.plugin_id && <div className="mini-tags">来源插件：{skill.plugin_name || skill.plugin_id}</div>}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="skill-editor-panel">
+                    {!selectedSkill && !selectedSkillId && <div className="panel-hint">选择技能后可查看和编辑 Markdown。</div>}
+                    {(!!selectedSkill || !!selectedSkillId) && (
+                      <>
+                        <div className="metric-row"><span>技能 ID</span><strong>{selectedSkill?.skill_id || selectedSkillId}</strong></div>
+                        <div className="metric-row"><span>来源</span><strong>{selectedSkill?.plugin_id ? `插件 ${selectedSkill.plugin_name || selectedSkill.plugin_id}` : "工作区自定义"}</strong></div>
+                        <textarea
+                          className="skill-editor-textarea"
+                          value={skillEditorValue}
+                          onChange={(event) => setSkillEditorValue(event.target.value)}
+                          disabled={!!selectedSkill?.plugin_id}
+                          spellCheck={false}
+                        />
+                        {!!selectedSkill?.plugin_id && <div className="panel-hint">插件技能由插件管理，不能在此直接编辑或删除。</div>}
+                      </>
+                    )}
+                  </div>
                 </div>
-              ))}
-              {!(inspector.skills?.skills || []).length && <div className="panel-hint">当前还没有自定义技能。</div>}
+              )}
+              {!skillItems.length && <div className="panel-hint">当前还没有自定义技能。</div>}
             </>
           )}
         </InspectorSection>

@@ -194,6 +194,36 @@ export async function fetchSkillsDashboard(agentId = "main") {
 }
 
 
+export async function fetchSkillTemplate(agentId = "main", skillName = "new_skill") {
+  const query = new URLSearchParams({ skill_name: skillName });
+  return requestJson(`/agents/${agentId}/skills/template?${query.toString()}`);
+}
+
+
+export async function reloadAgentSkills(agentId = "main") {
+  return requestJson(`/agents/${agentId}/skills/reload`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+
+export async function saveAgentSkill({ agentId = "main", skillId, markdown }) {
+  return requestJson(`/agents/${agentId}/skills/${skillId}`, {
+    method: "PUT",
+    body: JSON.stringify({ markdown }),
+    timeoutMs: 30000,
+  });
+}
+
+
+export async function deleteAgentSkill(agentId = "main", skillId) {
+  return requestJson(`/agents/${agentId}/skills/${skillId}`, {
+    method: "DELETE",
+  });
+}
+
+
 export async function fetchSystemDashboard() {
   return requestJson("/dashboard/system");
 }
