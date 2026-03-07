@@ -3,6 +3,7 @@
 from pathlib import Path
 import re
 
+from app.plugins.types import PluginManifest
 from app.skills.types import SkillParameter, SkillSpec
 
 
@@ -27,7 +28,7 @@ _PARAM_PATTERN = re.compile(
 
 
 class SkillParser:
-    def parse(self, skill_path: Path) -> SkillSpec:
+    def parse(self, skill_path: Path, plugin: PluginManifest | None = None) -> SkillSpec:
         skill_md = skill_path / "SKILL.md"
         text = skill_md.read_text(encoding="utf-8") if skill_md.exists() else ""
         mtime_ns = skill_md.stat().st_mtime_ns if skill_md.exists() else -1
@@ -55,6 +56,14 @@ class SkillParser:
             path=skill_path,
             raw_markdown=text,
             mtime_ns=mtime_ns,
+            plugin_id=plugin.plugin_id if plugin else None,
+            plugin_name=plugin.name if plugin else None,
+            plugin_enabled=plugin.enabled if plugin else True,
+            plugin_config_schema=dict(plugin.config_schema) if plugin else {},
+            plugin_config=dict(plugin.config) if plugin else {},
+            default_tools=list(plugin.default_tools) if plugin else [],
+            optional_tools=list(plugin.optional_tools) if plugin else [],
+            entry_script=plugin.entry_script if plugin else None,
         )
 
     def _split_sections(self, markdown: str) -> tuple[str, dict[str, str]]:

@@ -92,6 +92,15 @@ class SkillUpsertRequest(BaseModel):
     markdown: str = Field(default="")
 
 
+class PluginUpsertRequest(BaseModel):
+    manifest: dict[str, Any] = Field(default_factory=dict)
+    skills: dict[str, str] = Field(default_factory=dict)
+
+
+class PluginStateRequest(BaseModel):
+    enabled: bool = True
+
+
 class FileContentUpsertRequest(BaseModel):
     path: str = Field(min_length=1)
     content: str = Field(default="")
@@ -424,6 +433,56 @@ def build_api_router() -> APIRouter:
     async def skill_template(agent_id: str, request: Request, skill_name: str = "new_skill") -> dict[str, str]:
         del agent_id
         return {"template": request.app.state.runtime.skill_template(skill_name)}
+
+    @router.get("/agents/{agent_id}/plugins")
+    async def list_agent_plugins(agent_id: str, request: Request, force_refresh: bool = False) -> dict[str, Any]:
+        return request.app.state.runtime.list_agent_plugins(agent_id=agent_id, force_refresh=force_refresh)
+
+    @router.post("/agents/{agent_id}/plugins/reload")
+    async def reload_agent_plugins(agent_id: str, request: Request) -> dict[str, Any]:
+        return request.app.state.runtime.reload_agent_plugins(agent_id=agent_id)
+
+    @router.get("/agents/{agent_id}/plugins/template")
+    async def plugin_template(agent_id: str, request: Request, plugin_id: str = "new_plugin") -> dict[str, Any]:
+        del agent_id
+        return {"template": request.app.state.runtime.plugin_template(plugin_id)}
+
+    @router.put("/agents/{agent_id}/plugins/{plugin_id}")
+    async def install_agent_plugin(
+        agent_id: str,
+        plugin_id: str,
+        body: PluginUpsertRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            return request.app.state.runtime.install_agent_plugin(
+                agent_id=agent_id,
+                plugin_id=plugin_id,
+                manifest=body.manifest,
+                skills=body.skills,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/agents/{agent_id}/plugins/{plugin_id}/state")
+    async def set_agent_plugin_state(
+        agent_id: str,
+        plugin_id: str,
+        body: PluginStateRequest,
+        request: Request,
+    ) -> dict[str, Any]:
+        try:
+            return request.app.state.runtime.set_agent_plugin_enabled(
+                agent_id=agent_id,
+                plugin_id=plugin_id,
+                enabled=body.enabled,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.delete("/agents/{agent_id}/plugins/{plugin_id}")
+    async def delete_agent_plugin(agent_id: str, plugin_id: str, request: Request) -> dict[str, Any]:
+        return request.app.state.runtime.delete_agent_plugin(agent_id=agent_id, plugin_id=plugin_id)
 
     @router.put("/agents/{agent_id}/skills/{skill_id}")
     async def upsert_agent_skill(

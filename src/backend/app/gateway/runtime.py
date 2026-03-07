@@ -145,6 +145,10 @@ class GatewayRuntime:
             "skill.reloaded",
             "skill.updated",
             "skill.deleted",
+            "plugin.reloaded",
+            "plugin.updated",
+            "plugin.deleted",
+            "plugin.state_changed",
             "user.input.received",
             "agent.execution.started",
             "agent.execution.completed",
@@ -531,6 +535,56 @@ class GatewayRuntime:
         snapshot = self.skill_loader.snapshot(agent_id=agent_id, force_refresh=force_refresh)
         snapshot["cache"] = self.skill_loader.cache_stats()
         return snapshot
+
+    def list_agent_plugins(self, agent_id: str, force_refresh: bool = False) -> dict[str, Any]:
+        self.agent_manager.ensure_agent(agent_id)
+        return self.skill_loader.list_plugins(agent_id=agent_id, force_refresh=force_refresh)
+
+    def reload_agent_plugins(self, agent_id: str) -> dict[str, Any]:
+        self.agent_manager.ensure_agent(agent_id)
+        snapshot = self.skill_loader.reload_plugins(agent_id)
+        self.event_bus.emit(
+            "plugin.reloaded",
+            {"session_id": "", "agent_id": agent_id, "count": snapshot["count"]},
+        )
+        return snapshot
+
+    def install_agent_plugin(
+        self,
+        agent_id: str,
+        plugin_id: str,
+        manifest: dict[str, Any],
+        skills: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        self.agent_manager.ensure_agent(agent_id)
+        plugin = self.skill_loader.install_plugin(agent_id=agent_id, plugin_id=plugin_id, manifest=manifest, skills=skills)
+        self.event_bus.emit(
+            "plugin.updated",
+            {"session_id": "", "agent_id": agent_id, "plugin_id": plugin_id},
+        )
+        return plugin
+
+    def set_agent_plugin_enabled(self, agent_id: str, plugin_id: str, enabled: bool) -> dict[str, Any]:
+        self.agent_manager.ensure_agent(agent_id)
+        plugin = self.skill_loader.set_plugin_enabled(agent_id=agent_id, plugin_id=plugin_id, enabled=enabled)
+        self.event_bus.emit(
+            "plugin.state_changed",
+            {"session_id": "", "agent_id": agent_id, "plugin_id": plugin_id, "enabled": enabled},
+        )
+        return plugin
+
+    def delete_agent_plugin(self, agent_id: str, plugin_id: str) -> dict[str, Any]:
+        self.agent_manager.ensure_agent(agent_id)
+        deleted = self.skill_loader.delete_plugin(agent_id=agent_id, plugin_id=plugin_id)
+        if deleted:
+            self.event_bus.emit(
+                "plugin.deleted",
+                {"session_id": "", "agent_id": agent_id, "plugin_id": plugin_id},
+            )
+        return {"agent_id": agent_id, "plugin_id": plugin_id, "deleted": deleted}
+
+    def plugin_template(self, plugin_id: str) -> dict[str, Any]:
+        return self.skill_loader.plugin_template(plugin_id)
 
     def match_agent_skills(self, agent_id: str, user_message: str, limit: int = 5) -> dict[str, Any]:
         self.agent_manager.ensure_agent(agent_id)

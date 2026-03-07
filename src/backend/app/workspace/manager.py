@@ -28,6 +28,7 @@ CONTEXT_DEFAULTS = {
 
 WORKSPACE_DIRECTORIES = [
     "skills",
+    "plugins",
     "memory/logs",
     "memory/summaries",
     "logs",
