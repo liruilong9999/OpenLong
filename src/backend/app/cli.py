@@ -348,6 +348,7 @@ def _handle_doctor(args: argparse.Namespace) -> int:
     checks = readiness.get("checks") or {}
     warnings = payload.get("warnings") or []
     errors = payload.get("errors") or []
+    self_evolution = payload.get("self_evolution") or {}
     text_lines = [f"status: {payload['status']}"]
     text_lines.extend(f"{name}: {'OK' if value else 'WARN'}" for name, value in checks.items())
     if warnings:
@@ -356,6 +357,11 @@ def _handle_doctor(args: argparse.Namespace) -> int:
     if errors:
         text_lines.append("errors:")
         text_lines.extend(f"- {item}" for item in errors)
+    suggestions = self_evolution.get("suggestions") or []
+    if suggestions:
+        text_lines.append("self-evolution suggestions:")
+        for item in suggestions[:3]:
+            text_lines.append(f"- [{item.get('priority')}] {item.get('title')}")
     text = "\n".join(text_lines)
     return _emit(payload, as_json=args.json, fallback_text=text)
 

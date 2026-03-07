@@ -1091,6 +1091,7 @@ class GatewayRuntime:
     def doctor(self) -> dict[str, Any]:
         diagnostics = validate_gateway_settings(self.settings)
         readiness = self.readiness()
+        self_evolution = self.self_evolution_report(agent_id="main")
         return {
             "status": "ok" if not diagnostics["errors"] else "error",
             "auth": {
@@ -1105,6 +1106,7 @@ class GatewayRuntime:
             "workspaces": self.workspace_manager.list_workspaces(),
             "tool_permissions": self.tool_executor.permission_snapshot(),
             "model_router": self.model_router.stats(),
+            "self_evolution": self_evolution,
             "errors": diagnostics["errors"],
             "warnings": diagnostics["warnings"],
         }
@@ -1115,6 +1117,27 @@ class GatewayRuntime:
             "event_name": event_name,
             "items": self.event_bus.recent(limit=limit, event_name=event_name),
         }
+
+    def self_evolution_snapshot(self, agent_id: str = "main") -> dict[str, Any]:
+        return {
+            "readiness": self.readiness(),
+            "task_queue": self.task_queue.stats(),
+            "tool_logs": self.tool_executor.log_stats(),
+            "recent_tool_logs": self.tool_executor.recent_logs(limit=30),
+            "model_router": self.model_router.stats(),
+            "recent_model_calls": self.model_router.recent_calls(limit=30),
+            "automations": self.automation_service.list_jobs(),
+            "automation_runs": self.automation_service.list_runs(limit=30),
+            "recent_events": self.event_bus.recent(limit=40),
+            "workspace_count": len(self.workspace_manager.list_workspaces()),
+            "session_count": len(self.session_manager.list_sessions(include_closed=True)),
+            "agent_id": agent_id,
+        }
+
+    def self_evolution_report(self, agent_id: str = "main") -> dict[str, Any]:
+        snapshot = self.self_evolution_snapshot(agent_id=agent_id)
+        report = self.self_evolution_engine.evaluate(agent_id, snapshot)
+        return report.to_dict()
 
     def list_automations(self) -> dict[str, Any]:
         return self.automation_service.list_jobs()
@@ -1204,6 +1227,7 @@ class GatewayRuntime:
             "shell_logs": self.tool_logs(limit=10, tool_name="shell"),
             "automations": self.automation_service.list_jobs(),
             "automation_runs": self.automation_service.list_runs(limit=10),
+            "self_evolution": self.self_evolution_report(agent_id="main"),
             "workspaces": {
                 "total": len(self.workspace_manager.list_workspaces()),
                 "templates": len(self.workspace_manager.list_templates()["templates"]),

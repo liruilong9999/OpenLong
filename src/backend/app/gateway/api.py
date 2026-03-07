@@ -145,6 +145,10 @@ def build_api_router() -> APIRouter:
         response.status_code = status.HTTP_200_OK if payload["status"] == "ok" else status.HTTP_503_SERVICE_UNAVAILABLE
         return payload
 
+    @router.get("/self-evolution")
+    async def self_evolution(request: Request, agent_id: str = "main") -> dict[str, Any]:
+        return request.app.state.runtime.self_evolution_report(agent_id=agent_id)
+
     @router.post("/chat", response_model=ChatResponse)
     async def chat(body: ChatRequest, request: Request) -> ChatResponse:
         runtime = request.app.state.runtime
