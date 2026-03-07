@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 import uvicorn
 
+from app.acp_bridge import ACPBridge
 from app.core.config import load_settings
 from app.gateway.runtime import GatewayRuntime
 
@@ -129,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser = subparsers.add_parser("doctor", help="Run local runtime diagnostics")
     _add_json_flag(doctor_parser)
     doctor_parser.set_defaults(handler=_handle_doctor)
+
+    acp_parser = subparsers.add_parser("acp", help="Run ACP stdio bridge")
+    acp_parser.add_argument("--agent-id", default="main")
+    acp_parser.add_argument("--session-prefix", default="acp")
+    acp_parser.set_defaults(handler=_handle_acp)
 
     return parser
 
@@ -352,3 +358,9 @@ def _handle_doctor(args: argparse.Namespace) -> int:
         text_lines.extend(f"- {item}" for item in errors)
     text = "\n".join(text_lines)
     return _emit(payload, as_json=args.json, fallback_text=text)
+
+
+def _handle_acp(args: argparse.Namespace) -> int:
+    runtime = _runtime()
+    bridge = ACPBridge(runtime, default_agent_id=args.agent_id, session_prefix=args.session_prefix)
+    return asyncio.run(bridge.run_stdio(sys.stdin, sys.stdout))
