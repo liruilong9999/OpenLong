@@ -337,20 +337,18 @@ def _handle_workspace_logs(args: argparse.Namespace) -> int:
 
 def _handle_doctor(args: argparse.Namespace) -> int:
     runtime = _runtime()
-    health = runtime.model_router.endpoint_for("main", task_type="chat")
-    tools = runtime.list_tools()
-    workspaces = runtime.list_workspaces()
-    sessions = runtime.session_manager.list_sessions(include_closed=True)
-    checks = {
-        "workspace_root_exists": runtime.workspace_manager.workspace_root.exists(),
-        "session_storage_exists": (runtime.workspace_manager.workspace_root / "_sessions").exists(),
-        "model_configured": bool(health.has_api_key and health.model),
-        "shell_enabled": any(item["name"] == "shell" for item in tools["tools"]),
-        "tool_count": tools["count"],
-        "workspace_count": len(workspaces),
-        "session_count": len(sessions),
-    }
-    status = "ok" if all(checks.values()) else "warn"
-    payload = {"status": status, "checks": checks}
-    text = "\n".join(f"{name}: {'OK' if value else 'WARN'}" for name, value in checks.items())
+    payload = runtime.doctor()
+    readiness = payload.get("readiness") or {}
+    checks = readiness.get("checks") or {}
+    warnings = payload.get("warnings") or []
+    errors = payload.get("errors") or []
+    text_lines = [f"status: {payload['status']}"]
+    text_lines.extend(f"{name}: {'OK' if value else 'WARN'}" for name, value in checks.items())
+    if warnings:
+        text_lines.append("warnings:")
+        text_lines.extend(f"- {item}" for item in warnings)
+    if errors:
+        text_lines.append("errors:")
+        text_lines.extend(f"- {item}" for item in errors)
+    text = "\n".join(text_lines)
     return _emit(payload, as_json=args.json, fallback_text=text)

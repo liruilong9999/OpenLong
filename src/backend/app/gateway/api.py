@@ -3,9 +3,11 @@
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+
+from app.core.security import authenticate_credentials, gateway_auth_enabled
 
 
 class ChatRequest(BaseModel):
@@ -112,14 +114,24 @@ def build_api_router() -> APIRouter:
     router = APIRouter()
 
     @router.get("/health")
-    async def health(request: Request) -> dict[str, str]:
-        endpoint = request.app.state.runtime.model_router.endpoint_for("main", task_type="chat")
-        return {
-            "status": "ok",
-            "provider": endpoint.provider,
-            "model": endpoint.model,
-            "key_configured": str(endpoint.has_api_key).lower(),
-        }
+    async def health(request: Request) -> dict[str, Any]:
+        return request.app.state.runtime.health(agent_id="main", task_type="chat")
+
+    @router.get("/ready")
+    async def ready(request: Request, response: Response) -> dict[str, Any]:
+        payload = request.app.state.runtime.readiness()
+        response.status_code = status.HTTP_200_OK if payload["status"] == "ready" else status.HTTP_503_SERVICE_UNAVAILABLE
+        return payload
+
+    @router.get("/logs")
+    async def logs(request: Request, limit: int = 100, event_name: str | None = None) -> dict[str, Any]:
+        return request.app.state.runtime.logs(limit=limit, event_name=event_name)
+
+    @router.get("/doctor")
+    async def doctor(request: Request, response: Response) -> dict[str, Any]:
+        payload = request.app.state.runtime.doctor()
+        response.status_code = status.HTTP_200_OK if payload["status"] == "ok" else status.HTTP_503_SERVICE_UNAVAILABLE
+        return payload
 
     @router.post("/chat", response_model=ChatResponse)
     async def chat(body: ChatRequest, request: Request) -> ChatResponse:
@@ -136,6 +148,17 @@ def build_api_router() -> APIRouter:
 
     @router.websocket("/ws/{session_id}")
     async def ws_chat(websocket: WebSocket, session_id: str) -> None:
+        settings = websocket.app.state.settings
+        if gateway_auth_enabled(settings):
+            ok, reason = authenticate_credentials(
+                settings=settings,
+                headers=websocket.headers,
+                query_params=websocket.query_params,
+            )
+            if not ok:
+                await websocket.close(code=1008, reason=reason or "unauthorized")
+                return
+
         runtime = websocket.app.state.runtime
         runtime.create_session(session_id=session_id)
         await runtime.websocket_hub.connect(session_id=session_id, websocket=websocket)

@@ -14,6 +14,7 @@ from app.gateway.model_router import ModelRouter
 from app.gateway.session_manager import SessionManager
 from app.gateway.task_queue import TaskKind, TaskQueue
 from app.gateway.websocket import WebSocketHub
+from app.core.security import gateway_auth_enabled, gateway_auth_mode, validate_gateway_settings
 from app.models.message import ChatMessage, Role
 from app.self_evolution.engine import SelfEvolutionEngine
 from app.skills.loader import SkillLoader
@@ -1036,6 +1037,65 @@ class GatewayRuntime:
 
     def dashboard_agents(self) -> list[dict[str, Any]]:
         return self.agent_manager.list_agents(include_stopped=True)
+
+    def health(self, agent_id: str = "main", task_type: str = "chat") -> dict[str, Any]:
+        endpoint = self.model_router.endpoint_for(agent_id, task_type=task_type)
+        return {
+            "status": "ok",
+            "agent_id": agent_id,
+            "task_type": task_type,
+            "provider": endpoint.provider,
+            "model": endpoint.model,
+            "key_configured": str(endpoint.has_api_key).lower(),
+            "auth_enabled": gateway_auth_enabled(self.settings),
+            "auth_mode": gateway_auth_mode(self.settings),
+        }
+
+    def readiness(self) -> dict[str, Any]:
+        diagnostics = validate_gateway_settings(self.settings)
+        workspace_root = self.workspace_manager.workspace_root
+        session_storage = workspace_root / "_sessions"
+        checks = {
+            "config_valid": not diagnostics["errors"],
+            "workspace_root_exists": workspace_root.exists(),
+            "session_storage_exists": session_storage.exists(),
+            "tool_registry_ready": self.tool_registry.snapshot()["count"] > 0,
+        }
+        ready = all(checks.values())
+        return {
+            "status": "ready" if ready else "not_ready",
+            "checks": checks,
+            "errors": diagnostics["errors"],
+            "warnings": diagnostics["warnings"],
+        }
+
+    def doctor(self) -> dict[str, Any]:
+        diagnostics = validate_gateway_settings(self.settings)
+        readiness = self.readiness()
+        return {
+            "status": "ok" if not diagnostics["errors"] else "error",
+            "auth": {
+                "enabled": gateway_auth_enabled(self.settings),
+                "mode": gateway_auth_mode(self.settings),
+                "token_configured": bool(getattr(self.settings, "gateway_auth_token", "")),
+                "password_configured": bool(getattr(self.settings, "gateway_auth_password", "")),
+            },
+            "readiness": readiness,
+            "workspace_root": str(self.workspace_manager.workspace_root),
+            "sessions": self.session_manager.list_sessions(include_closed=True)[:10],
+            "workspaces": self.workspace_manager.list_workspaces(),
+            "tool_permissions": self.tool_executor.permission_snapshot(),
+            "model_router": self.model_router.stats(),
+            "errors": diagnostics["errors"],
+            "warnings": diagnostics["warnings"],
+        }
+
+    def logs(self, limit: int = 100, event_name: str | None = None) -> dict[str, Any]:
+        return {
+            "limit": limit,
+            "event_name": event_name,
+            "items": self.event_bus.recent(limit=limit, event_name=event_name),
+        }
 
     def dashboard_sessions(self) -> list[dict[str, Any]]:
         return self.session_manager.list_sessions(include_closed=True)

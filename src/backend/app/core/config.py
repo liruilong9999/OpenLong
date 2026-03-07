@@ -66,6 +66,9 @@ class Settings(BaseSettings):
 
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8000)
+    gateway_auth_mode: str = Field(default="disabled")
+    gateway_auth_token: str = Field(default="")
+    gateway_auth_password: str = Field(default="")
 
     # key 文件路径，默认读取仓库内 doc/key.txt。
     key_file_path: str = Field(default="doc/key.txt")

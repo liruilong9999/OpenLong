@@ -111,6 +111,6 @@ def test_cli_shell_and_doctor(monkeypatch, tmp_path: Path, capsys) -> None:
     assert code == 0
     doctor_payload = json.loads(capsys.readouterr().out)
     assert "status" in doctor_payload
-    assert "checks" in doctor_payload
-    assert "tool_count" in doctor_payload["checks"]
-
+    assert "readiness" in doctor_payload
+    assert "checks" in doctor_payload["readiness"]
+    assert "tool_registry_ready" in doctor_payload["readiness"]["checks"]
